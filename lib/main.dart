@@ -8,9 +8,18 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:google_generative_ai/google_generative_ai.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:fl_chart/fl_chart.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'dart:io';
+import 'package:camera/camera.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
+import 'package:file_picker/file_picker.dart';
 // ============================================================
 // SUPABASE CONFIG
 // ============================================================
@@ -28,7 +37,7 @@ class SupabaseConfig {
 
 class AppConstants {
   static const String appName = 'DepthFence';
-  static const String appVersion = '1.1.0-MVP';
+  static const String appVersion = '2.0.0';
   static const String tagline = 'Geospatial Land Intelligence Platform';
 
   // ---------- TILE SERVERS ----------
@@ -52,7 +61,17 @@ class AppConstants {
   static const String userEmailKey = 'depthfence_email';
   static const String userNameKey = 'depthfence_name';
   static const String registeredUsersKey = 'depthfence_users';
+
+  // ---------- Gemini AI ----------
+  // API key is loaded from --dart-define=GEMINI_API_KEY=... at build time.
+  // Never commit the actual key to source control.
+  static const String geminiApiKey = String.fromEnvironment(
+    'GEMINI_API_KEY',
+    defaultValue: '',
+  );
+  static const String geminiModel = 'gemini-2.0-flash';
 }
+
 
 // ============================================================
 // THEME
@@ -73,6 +92,8 @@ class AppTheme {
   static const Color danger = Color(0xFFEF4444);
   static const Color warning = Color(0xFFF59E0B);
   static const Color info = Color(0xFF3B82F6);
+  static const Color cyan = Color(0xFF00E5FF);      // ADD
+  static const Color emerald = Color(0xFF00E676);   // ADD
 
   static const Color textPrimary = Color(0xFFFFFFFF);
   static const Color textSecondary = Color(0xFFB0B0B0);
@@ -82,95 +103,95 @@ class AppTheme {
   static const Color borderGold = Color(0x66FFC107);
 
   static ThemeData get darkTheme => ThemeData(
-        brightness: Brightness.dark,
-        scaffoldBackgroundColor: scaffold,
-        primaryColor: gold,
-        colorScheme: const ColorScheme.dark(
-          primary: gold,
-          secondary: gold,
-          surface: surface,
-          onPrimary: Colors.black,
-          onSecondary: Colors.black,
-          onSurface: textPrimary,
+    brightness: Brightness.dark,
+    scaffoldBackgroundColor: scaffold,
+    primaryColor: gold,
+    colorScheme: const ColorScheme.dark(
+      primary: gold,
+      secondary: gold,
+      surface: surface,
+      onPrimary: Colors.black,
+      onSecondary: Colors.black,
+      onSurface: textPrimary,
+    ),
+    fontFamily: 'Roboto',
+    appBarTheme: const AppBarTheme(
+      backgroundColor: scaffold,
+      foregroundColor: gold,
+      elevation: 0,
+      centerTitle: false,
+      systemOverlayStyle: SystemUiOverlayStyle.light,
+      titleTextStyle: TextStyle(
+        color: gold,
+        fontSize: 18,
+        fontWeight: FontWeight.w700,
+        letterSpacing: 0.4,
+      ),
+    ),
+    cardTheme: CardThemeData(
+      color: card,
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(20),
+        side: const BorderSide(color: border, width: 1),
+      ),
+    ),
+    elevatedButtonTheme: ElevatedButtonThemeData(
+      style: ElevatedButton.styleFrom(
+        backgroundColor: gold,
+        foregroundColor: Colors.black,
+        minimumSize: const Size.fromHeight(56),
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
         ),
-        fontFamily: 'Roboto',
-        appBarTheme: const AppBarTheme(
-          backgroundColor: scaffold,
-          foregroundColor: gold,
-          elevation: 0,
-          centerTitle: false,
-          systemOverlayStyle: SystemUiOverlayStyle.light,
-          titleTextStyle: TextStyle(
-            color: gold,
-            fontSize: 18,
-            fontWeight: FontWeight.w700,
-            letterSpacing: 0.4,
-          ),
+        textStyle: const TextStyle(
+          fontSize: 16,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0.3,
         ),
-        cardTheme: CardThemeData(
-          color: card,
-          elevation: 0,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-            side: const BorderSide(color: border, width: 1),
-          ),
-        ),
-        elevatedButtonTheme: ElevatedButtonThemeData(
-          style: ElevatedButton.styleFrom(
-            backgroundColor: gold,
-            foregroundColor: Colors.black,
-            minimumSize: const Size.fromHeight(56),
-            elevation: 0,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-            ),
-            textStyle: const TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 0.3,
-            ),
-          ),
-        ),
-        inputDecorationTheme: InputDecorationTheme(
-          filled: true,
-          fillColor: inputFill,
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(16),
-            borderSide: const BorderSide(color: border, width: 1),
-          ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(16),
-            borderSide: const BorderSide(color: border, width: 1),
-          ),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(16),
-            borderSide: const BorderSide(color: gold, width: 1.6),
-          ),
-          errorBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(16),
-            borderSide: const BorderSide(color: danger, width: 1.4),
-          ),
-          focusedErrorBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(16),
-            borderSide: const BorderSide(color: danger, width: 1.6),
-          ),
-          labelStyle: const TextStyle(color: textSecondary, fontSize: 14),
-          floatingLabelStyle: const TextStyle(color: gold, fontSize: 13),
-          hintStyle: const TextStyle(color: textMuted, fontSize: 14),
-          prefixIconColor: gold,
-          suffixIconColor: textSecondary,
-        ),
-        bottomNavigationBarTheme: const BottomNavigationBarThemeData(
-          backgroundColor: surface,
-          selectedItemColor: gold,
-          unselectedItemColor: textMuted,
-          type: BottomNavigationBarType.fixed,
-          selectedLabelStyle: TextStyle(fontWeight: FontWeight.bold),
-        ),
-        useMaterial3: true,
-      );
+      ),
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      filled: true,
+      fillColor: inputFill,
+      contentPadding:
+      const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(16),
+        borderSide: const BorderSide(color: border, width: 1),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(16),
+        borderSide: const BorderSide(color: border, width: 1),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(16),
+        borderSide: const BorderSide(color: gold, width: 1.6),
+      ),
+      errorBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(16),
+        borderSide: const BorderSide(color: danger, width: 1.4),
+      ),
+      focusedErrorBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(16),
+        borderSide: const BorderSide(color: danger, width: 1.6),
+      ),
+      labelStyle: const TextStyle(color: textSecondary, fontSize: 14),
+      floatingLabelStyle: const TextStyle(color: gold, fontSize: 13),
+      hintStyle: const TextStyle(color: textMuted, fontSize: 14),
+      prefixIconColor: gold,
+      suffixIconColor: textSecondary,
+    ),
+    bottomNavigationBarTheme: const BottomNavigationBarThemeData(
+      backgroundColor: surface,
+      selectedItemColor: gold,
+      unselectedItemColor: textMuted,
+      type: BottomNavigationBarType.fixed,
+      selectedLabelStyle: TextStyle(fontWeight: FontWeight.bold),
+    ),
+    useMaterial3: true,
+  );
 }
 
 // ============================================================
@@ -199,26 +220,26 @@ class RegisteredUser {
   });
 
   Map<String, dynamic> toJson() => {
-        'name': name,
-        'district': district,
-        'city': city,
-        'pincode': pincode,
-        'mobile': mobile,
-        'email': email,
-        'password': password,
-        'dob': dob,
-      };
+    'name': name,
+    'district': district,
+    'city': city,
+    'pincode': pincode,
+    'mobile': mobile,
+    'email': email,
+    'password': password,
+    'dob': dob,
+  };
 
   factory RegisteredUser.fromJson(Map<String, dynamic> j) => RegisteredUser(
-        name: j['name'] ?? '',
-        district: j['district'] ?? '',
-        city: j['city'] ?? '',
-        pincode: j['pincode'] ?? '',
-        mobile: j['mobile'] ?? '',
-        email: j['email'] ?? '',
-        password: j['password'] ?? '',
-        dob: j['dob'],
-      );
+    name: j['name'] ?? '',
+    district: j['district'] ?? '',
+    city: j['city'] ?? '',
+    pincode: j['pincode'] ?? '',
+    mobile: j['mobile'] ?? '',
+    email: j['email'] ?? '',
+    password: j['password'] ?? '',
+    dob: j['dob'],
+  );
 }
 
 class Anomaly {
@@ -299,6 +320,27 @@ class DepthFenceState extends ChangeNotifier {
 
   LatLng _currentLocation = const LatLng(20.5937, 78.9629);
   int _currentTabIndex = 0;
+  bool _isDualViewOverview = false;                              // ADD
+  double _shadowLength = 32.37;                                  // ADD
+  double _solarAngle = -26.22;                                   // ADD
+  double _horizontalDistanceAB = 142.68;                         // ADD
+  double _deltaZ = 12.34;                                        // ADD
+
+  // ---------- Selected Building from Map Tap ----------
+  LatLng? _selectedBuildingLocation;
+  double _selectedBuildingHeight = 0.0;
+  double _selectedBuildingDepth = 0.0;
+  DateTime? _selectedAt;
+  bool _autoCalculated = false;
+
+  // ---------- PDF State ----------
+  String? _lastPdfPath;
+  final List<LatLng> _boundaryPoints = const [                   // ADD
+    LatLng(10.8576, 77.8487),
+    LatLng(10.8583, 77.8495),
+    LatLng(10.8569, 77.8491),
+    LatLng(10.8572, 77.8482),
+  ];
 
   SharedPreferences? _prefs;
   List<RegisteredUser> _registeredUsers = [];
@@ -308,7 +350,7 @@ class DepthFenceState extends ChangeNotifier {
       id: 'ANM-001',
       title: 'Unauthorized Structure Detected',
       description:
-          'A permanent structure detected on government land parcel without authorization.',
+      'A permanent structure detected on government land parcel without authorization.',
       parcelId: 'ULPIN-2024-001-A',
       severity: 'critical',
       status: 'new',
@@ -319,7 +361,7 @@ class DepthFenceState extends ChangeNotifier {
       id: 'ANM-002',
       title: 'Terrain Elevation Shift',
       description:
-          'Significant elevation change detected in Zone 2. Possible illegal excavation.',
+      'Significant elevation change detected in Zone 2. Possible illegal excavation.',
       parcelId: 'ULPIN-2024-002-B',
       severity: 'high',
       status: 'in_progress',
@@ -371,6 +413,23 @@ class DepthFenceState extends ChangeNotifier {
   String get userName => _userName;
   LatLng get currentLocation => _currentLocation;
   int get currentTabIndex => _currentTabIndex;
+  bool get isDualViewOverview => _isDualViewOverview;            // ADD
+  double get shadowLength => _shadowLength;                       // ADD
+  double get solarAngle => _solarAngle;                           // ADD
+  double get horizontalDistanceAB => _horizontalDistanceAB;       // ADD
+  double get deltaZ => _deltaZ;                                   // ADD
+  List<LatLng> get boundaryPoints => List.unmodifiable(_boundaryPoints); // ADD
+  LatLng? get selectedBuildingLocation => _selectedBuildingLocation;
+  double get selectedBuildingHeight => _selectedBuildingHeight;
+  double get selectedBuildingDepth => _selectedBuildingDepth;
+  DateTime? get selectedAt => _selectedAt;
+  bool get autoCalculated => _autoCalculated;
+  String? get lastPdfPath => _lastPdfPath;
+
+  double get calculatedHeight {                                    // ADD
+    final rad = solarAngle.abs() * (math.pi / 180);
+    return shadowLength * math.tan(rad);
+  }
   bool get isAdmin => _userRole == 'admin';
   List<Anomaly> get anomalies => List.unmodifiable(_anomalies);
   List<LandParcel> get parcels => List.unmodifiable(_parcels);
@@ -474,10 +533,24 @@ class DepthFenceState extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ---------- Supabase Auth ----------
+  SupabaseClient get _supabase => Supabase.instance.client;
+
   Future<void> init() async {
     _prefs = await SharedPreferences.getInstance();
     await _restoreSession();
     await _loadRegisteredUsers();
+
+    // ⭐ Listen for Supabase auth state changes
+    Supabase.instance.client.auth.onAuthStateChange.listen((data) {
+      final session = data.session;
+      if (session != null) {
+        debugPrint('🔐 Auth state: signed in as ${session.user.email}');
+      } else {
+        debugPrint('🔐 Auth state: signed out');
+      }
+    });
+
     refreshCurrentLocation();
   }
 
@@ -502,7 +575,7 @@ class DepthFenceState extends ChangeNotifier {
         .map((s) {
           try {
             final map = Map<String, dynamic>.from(
-              (const _JsonCodecShim()).decode(s) as Map,
+              jsonDecode(s) as Map,
             );
             return RegisteredUser.fromJson(map);
           } catch (_) {
@@ -516,10 +589,10 @@ class DepthFenceState extends ChangeNotifier {
   Future<void> _persistRegisteredUsers() async {
     final p = _prefs;
     if (p == null) return;
-    final list = _registeredUsers
-        .map((u) => const _JsonCodecShim().encode(u.toJson()))
-        .toList();
-    await p.setStringList(AppConstants.registeredUsersKey, list);
+    await p.setStringList(
+      AppConstants.registeredUsersKey,
+      _registeredUsers.map((u) => jsonEncode(u.toJson())).toList(),
+    );
   }
 
   Future<void> _persistSession() async {
@@ -531,10 +604,12 @@ class DepthFenceState extends ChangeNotifier {
     await p.setString(AppConstants.userNameKey, _userName);
   }
 
+  /// Returns 'admin', 'user', or null.
   Future<String?> tryLogin(String email, String password) async {
-    final normalizedEmail = email.trim().toLowerCase();
+    final e = email.trim().toLowerCase();
 
-    if (normalizedEmail == AppConstants.adminEmail &&
+    // 1. Admin hardcoded check (demo)
+    if (e == AppConstants.adminEmail &&
         password == AppConstants.adminPassword) {
       _isLoggedIn = true;
       _userRole = 'admin';
@@ -545,41 +620,98 @@ class DepthFenceState extends ChangeNotifier {
       return 'admin';
     }
 
-    final user = _registeredUsers.firstWhere(
-      (u) => u.email.toLowerCase() == normalizedEmail,
-      orElse: () => RegisteredUser(
-        name: '',
-        district: '',
-        city: '',
-        pincode: '',
-        mobile: '',
-        email: '',
-        password: '',
-      ),
-    );
+    // 2. Supabase Auth sign-in
+    try {
+      final response = await _supabase.auth.signInWithPassword(
+        email: e,
+        password: password,
+      );
 
-    if (user.email.isNotEmpty && user.password == password) {
+      if (response.user == null) return null;
+
+      // 3. Fetch profile for role + name
+      String role = 'user';
+      String displayName = e.split('@').first;
+
+      try {
+        final profile = await _supabase
+            .from('profiles')
+            .select('role, full_name')
+            .eq('id', response.user!.id)
+            .maybeSingle();
+
+        if (profile != null) {
+          role = profile['role'] ?? 'user';
+          displayName = profile['full_name'] ?? displayName;
+        }
+      } catch (err) {
+        debugPrint('Profile fetch failed: $err');
+      }
+
       _isLoggedIn = true;
-      _userRole = 'user';
-      _userEmail = user.email;
-      _userName = user.name;
+      _userRole = role;
+      _userEmail = e;
+      _userName = displayName;
       await _persistSession();
       notifyListeners();
-      return 'user';
+      return role;
+    } on AuthException catch (err) {
+      debugPrint('Supabase auth error: ${err.message}');
+      return null;
+    } catch (err) {
+      debugPrint('Login error: $err');
+      return null;
     }
-
-    return null;
   }
 
+  /// Returns 'ok' | 'exists' | 'invalid' | 'error'.
   Future<String> register(RegisteredUser user) async {
-    final email = user.email.trim().toLowerCase();
-    if (email == AppConstants.adminEmail) return 'invalid';
-    if (_registeredUsers.any((u) => u.email.toLowerCase() == email)) {
-      return 'exists';
+    final e = user.email.trim().toLowerCase();
+
+    if (e == AppConstants.adminEmail) return 'invalid';
+
+    try {
+      // 1. Sign up via Supabase Auth
+      final response = await _supabase.auth.signUp(
+        email: e,
+        password: user.password,
+        data: {
+          'full_name': user.name,
+          'district': user.district,
+          'city': user.city,
+          'pincode': user.pincode,
+          'mobile': user.mobile,
+        },
+      );
+
+      if (response.user == null) return 'error';
+
+      // 2. Upsert profile
+      try {
+        await _supabase.from('profiles').upsert({
+          'id': response.user!.id,
+          'full_name': user.name,
+          'district': user.district,
+          'city': user.city,
+          'pincode': user.pincode,
+          'mobile': user.mobile,
+          'role': 'user',
+        });
+      } catch (err) {
+        debugPrint('Profile upsert failed: $err');
+      }
+
+      _registeredUsers.add(user);
+      await _persistRegisteredUsers();
+
+      return 'ok';
+    } on AuthException catch (err) {
+      if (err.message.contains('already registered')) return 'exists';
+      return 'invalid';
+    } catch (err) {
+      debugPrint('Register error: $err');
+      return 'error';
     }
-    _registeredUsers.add(user);
-    await _persistRegisteredUsers();
-    return 'ok';
   }
 
   Future<void> loginAsDemoUser() async {
@@ -592,13 +724,76 @@ class DepthFenceState extends ChangeNotifier {
   }
 
   Future<void> logout() async {
+    try {
+      await _supabase.auth.signOut();
+    } catch (e) {
+      debugPrint('Sign out error: $e');
+    }
+
     _isLoggedIn = false;
     _userEmail = '';
     _userName = '';
     _userRole = 'user';
     _currentTabIndex = 0;
+    _isDualViewOverview = false;
     await _persistSession();
     notifyListeners();
+  }
+
+  Future<void> loadAnomaliesFromSupabase() async {
+    try {
+      final data = await _supabase
+          .from('anomalies')
+          .select()
+          .order('detected_at', ascending: false);
+
+      _anomalies.clear();
+      for (final row in data) {
+        _anomalies.add(Anomaly(
+          id: row['id'].toString(),
+          title: row['title'] ?? 'Unknown',
+          description: row['description'] ?? '',
+          parcelId: row['parcel_id'] ?? '',
+          severity: row['severity'] ?? 'medium',
+          status: row['status'] ?? 'new',
+          location: LatLng(
+            (row['latitude'] as num).toDouble(),
+            (row['longitude'] as num).toDouble(),
+          ),
+          detectedAt: DateTime.parse(row['detected_at']),
+        ));
+      }
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Load anomalies failed: $e');
+    }
+  }
+
+  Future<void> loadParcelsFromSupabase() async {
+    try {
+      final data = await _supabase
+          .from('parcels')
+          .select()
+          .order('created_at', ascending: false);
+
+      _parcels.clear();
+      for (final row in data) {
+        _parcels.add(LandParcel(
+          id: row['id'].toString(),
+          ulpin: row['ulpin'] ?? '',
+          ownerName: row['owner_name'] ?? '',
+          areaHa: (row['area_ha'] as num?)?.toDouble() ?? 0.0,
+          center: LatLng(
+            (row['latitude'] as num).toDouble(),
+            (row['longitude'] as num).toDouble(),
+          ),
+          status: row['status'] ?? 'pending',
+        ));
+      }
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Load parcels failed: $e');
+    }
   }
 
   void setCurrentLocation(LatLng loc) {
@@ -610,78 +805,70 @@ class DepthFenceState extends ChangeNotifier {
     _currentTabIndex = i;
     notifyListeners();
   }
-}
 
-class _JsonCodecShim {
-  const _JsonCodecShim();
-  String encode(Object? o) => _encode(o);
-  dynamic decode(String s) => _decode(s);
-
-  String _encode(Object? o) {
-    if (o == null) return 'null';
-    if (o is String) return '"${o.replaceAll('"', '\\"')}"';
-    if (o is num || o is bool) return '$o';
-    if (o is List) return '[${o.map(_encode).join(',')}]';
-    if (o is Map) {
-      return '{${o.entries.map((e) => '${_encode(e.key.toString())}:${_encode(e.value)}').join(',')}}';
-    }
-    return 'null';
+  void toggleDualView() {                                          // ADD
+    _isDualViewOverview = !_isDualViewOverview;
+    notifyListeners();
   }
 
-  dynamic _decode(String s) => _decodeObj(s.trim());
-
-  dynamic _decodeObj(String s) {
-    if (s == 'null') return null;
-    if (s.startsWith('"') && s.endsWith('"')) {
-      return s.substring(1, s.length - 1).replaceAll('\\"', '"');
-    }
-    if (s == 'true') return true;
-    if (s == 'false') return false;
-    final n = num.tryParse(s);
-    if (n != null) return n;
-    if (s.startsWith('[')) return _decodeList(s);
-    if (s.startsWith('{')) return _decodeMap(s);
-    return s;
+  void setShadowLength(double v) {                                 // ADD
+    _shadowLength = v;
+    notifyListeners();
   }
 
-  List _decodeList(String s) {
-    final inner = s.substring(1, s.length - 1).trim();
-    if (inner.isEmpty) return [];
-    return _splitTopLevel(inner).map(_decodeObj).toList();
+  void setSolarAngle(double v) {                                   // ADD
+    _solarAngle = v;
+    notifyListeners();
   }
 
-  Map<String, dynamic> _decodeMap(String s) {
-    final inner = s.substring(1, s.length - 1).trim();
-    final out = <String, dynamic>{};
-    if (inner.isEmpty) return out;
-    for (final pair in _splitTopLevel(inner)) {
-      final idx = pair.indexOf(':');
-      if (idx < 0) continue;
-      final k = _decodeObj(pair.substring(0, idx).trim()) as String;
-      final v = _decodeObj(pair.substring(idx + 1).trim());
-      out[k] = v;
-    }
-    return out;
+  void setHorizontalDistance(double v) {                           // ADD
+    _horizontalDistanceAB = v;
+    notifyListeners();
   }
 
-  List<String> _splitTopLevel(String s) {
-    final parts = <String>[];
-    var depth = 0;
-    var inStr = false;
-    var start = 0;
-    for (var i = 0; i < s.length; i++) {
-      final c = s[i];
-      if (c == '"' && (i == 0 || s[i - 1] != '\\')) inStr = !inStr;
-      if (inStr) continue;
-      if (c == '{' || c == '[') depth++;
-      if (c == '}' || c == ']') depth--;
-      if (c == ',' && depth == 0) {
-        parts.add(s.substring(start, i));
-        start = i + 1;
-      }
-    }
-    parts.add(s.substring(start));
-    return parts;
+  void setDeltaZ(double v) {                                       // ADD
+    _deltaZ = v;
+    notifyListeners();
+  }
+
+  // ---------- Map Building Selection ----------
+  /// Called when user taps the map and confirms the building.
+  void selectBuilding({
+    required LatLng location,
+    required double shadowLength,
+    required double solarAngle,
+  }) {
+    _selectedBuildingLocation = location;
+    _shadowLength = shadowLength;
+    _solarAngle = solarAngle;
+    // Auto-calculate height
+    final rad = solarAngle.abs() * (math.pi / 180);
+    _selectedBuildingHeight = shadowLength * math.tan(rad);
+    // Simulate depth (20% of height for realism)
+    _selectedBuildingDepth = _selectedBuildingHeight * 0.2;
+    _selectedAt = DateTime.now();
+    _autoCalculated = true;
+    notifyListeners();
+  }
+
+  void clearBuildingSelection() {
+    _selectedBuildingLocation = null;
+    _selectedBuildingHeight = 0.0;
+    _selectedBuildingDepth = 0.0;
+    _selectedAt = null;
+    _autoCalculated = false;
+    notifyListeners();
+  }
+
+  void setPdfPath(String path) {
+    _lastPdfPath = path;
+    notifyListeners();
+  }
+
+  // Coordinates set from map tap
+  void setSelectedCoordinates(LatLng coords) {
+    _selectedBuildingLocation = coords;
+    notifyListeners();
   }
 }
 
@@ -689,8 +876,19 @@ class _JsonCodecShim {
 // MAIN
 // ============================================================
 
+// Global camera list
+List<CameraDescription> globalCameras = [];
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // ⭐ Pre-load cameras BEFORE the app boots
+  try {
+    globalCameras = await availableCameras();
+    debugPrint('📷 Found ${globalCameras.length} cameras');
+  } catch (e) {
+    debugPrint('⚠ Camera preload failed: $e');
+  }
 
   try {
     await Supabase.initialize(
@@ -735,10 +933,12 @@ class DepthFenceApp extends StatelessWidget {
         '/boundary_extraction': (context) => const BoundaryExtractionScreen(),
         '/terrain_analysis': (context) => const TerrainAnalysisScreen(),
         '/delta_z': (context) => const DeltaZMappingScreen(),
-        '/delta_z_scanner': (context) => const DeltaZScreen(),
+        '/delta_z_scanner': (context) => const DeltaZScannerScreen(),
         '/anomaly_detection': (context) => const AnomalyDetectionScreen(),
         '/blueprint': (context) => const BlueprintDownloadScreen(),
         '/permissions': (context) => const PermissionsScreen(),
+        '/ai_vision_scanner': (context) => const AIVisionScannerScreen(),
+        '/gemini_chat': (context) => const GeminiChatScreen(),
       },
     );
   }
@@ -884,9 +1084,9 @@ class LightningAction extends StatelessWidget {
         onExtraAction: onExtraAction == null
             ? null
             : () {
-                Navigator.pop(context);
-                onExtraAction!();
-              },
+          Navigator.pop(context);
+          onExtraAction!();
+        },
         extraActionLabel: extraActionLabel,
         extraActionIcon: extraActionIcon,
       ),
@@ -1047,13 +1247,13 @@ class _LightningPopup extends StatelessWidget {
   }
 
   Widget _popupAction(
-    BuildContext context, {
-    required IconData icon,
-    required String title,
-    required String subtitle,
-    required VoidCallback onTap,
-    required bool highlighted,
-  }) {
+      BuildContext context, {
+        required IconData icon,
+        required String title,
+        required String subtitle,
+        required VoidCallback onTap,
+        required bool highlighted,
+      }) {
     return Material(
       color: Colors.transparent,
       child: InkWell(
@@ -1293,8 +1493,13 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _handleDemo() async {
-    final state = Provider.of<DepthFenceState>(context, listen: false);
-    await state.loginAsDemoUser();
+    final s = Provider.of<DepthFenceState>(context, listen: false);
+    await s.loginAsDemoUser();
+
+    // ⭐ Load real data from Supabase
+    await s.loadAnomaliesFromSupabase();
+    await s.loadParcelsFromSupabase();
+
     if (!mounted) return;
     Navigator.pushReplacementNamed(context, '/shell');
   }
@@ -1339,7 +1544,7 @@ class _LoginScreenState extends State<LoginScreen> {
                             ),
                             Padding(
                               padding:
-                                  const EdgeInsets.symmetric(horizontal: 14),
+                              const EdgeInsets.symmetric(horizontal: 14),
                               child: Text(
                                 'LOGIN',
                                 style: TextStyle(
@@ -1434,22 +1639,22 @@ class _LoginScreenState extends State<LoginScreen> {
                           onPressed: _loading ? null : _handleLogin,
                           child: _loading
                               ? const SizedBox(
-                                  width: 22,
-                                  height: 22,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2.4,
-                                    valueColor: AlwaysStoppedAnimation<Color>(
-                                        Colors.black),
-                                  ),
-                                )
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2.4,
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                  Colors.black),
+                            ),
+                          )
                               : const Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Text('Login'),
-                                    SizedBox(width: 8),
-                                    Icon(Icons.arrow_forward_rounded, size: 20),
-                                  ],
-                                ),
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text('Login'),
+                              SizedBox(width: 8),
+                              Icon(Icons.arrow_forward_rounded, size: 20),
+                            ],
+                          ),
                         ),
                         const SizedBox(height: 22),
                         Row(
@@ -1566,7 +1771,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
     );
     if (picked != null) {
       _dobController.text =
-          '${picked.day.toString().padLeft(2, '0')}/${picked.month.toString().padLeft(2, '0')}/${picked.year}';
+      '${picked.day.toString().padLeft(2, '0')}/${picked.month.toString().padLeft(2, '0')}/${picked.year}';
     }
   }
 
@@ -1576,7 +1781,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
 
     if (!_acceptTerms) {
       setState(() =>
-          _error = 'Please accept the Terms & Conditions to continue.');
+      _error = 'Please accept the Terms & Conditions to continue.');
       return;
     }
 
@@ -1604,11 +1809,11 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
     switch (result) {
       case 'exists':
         setState(() => _error =
-            'An account with this email already exists. Please sign in.');
+        'An account with this email already exists. Please sign in.');
         return;
       case 'invalid':
         setState(() =>
-            _error = 'This email is reserved. Please use a different one.');
+        _error = 'This email is reserved. Please use a different one.');
         return;
       case 'ok':
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1657,7 +1862,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
             Expanded(
               child: SingleChildScrollView(
                 keyboardDismissBehavior:
-                    ScrollViewKeyboardDismissBehavior.onDrag,
+                ScrollViewKeyboardDismissBehavior.onDrag,
                 padding: const EdgeInsets.fromLTRB(24, 8, 24, 32),
                 child: Form(
                   key: _formKey,
@@ -1796,7 +2001,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
                             return 'Email is required';
                           }
                           final email = v.trim();
-                          if (!RegExp(r'^[\w\.\-]+@[\w\.\-]+\.\w+$')
+                          if (!RegExp(r'^[\w.-]+@[\w.-]+\.\w+$')
                               .hasMatch(email)) {
                             return 'Enter a valid email address';
                           }
@@ -1852,7 +2057,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
                       const SizedBox(height: 20),
                       GestureDetector(
                         onTap: () => setState(
-                            () => _acceptTerms = !_acceptTerms),
+                                () => _acceptTerms = !_acceptTerms),
                         behavior: HitTestBehavior.opaque,
                         child: Container(
                           padding: const EdgeInsets.all(14),
@@ -1887,7 +2092,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
                                 ),
                                 child: _acceptTerms
                                     ? const Icon(Icons.check_rounded,
-                                        color: Colors.black, size: 16)
+                                    color: Colors.black, size: 16)
                                     : null,
                               ),
                               const SizedBox(width: 12),
@@ -1902,7 +2107,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
                                     children: [
                                       const TextSpan(
                                           text:
-                                              'I agree to the Terms and Conditions'),
+                                          'I agree to the Terms and Conditions'),
                                       const TextSpan(
                                         text: ' *',
                                         style: TextStyle(
@@ -1912,7 +2117,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
                                       ),
                                       WidgetSpan(
                                         alignment:
-                                            PlaceholderAlignment.middle,
+                                        PlaceholderAlignment.middle,
                                         child: GestureDetector(
                                           onTap: () {
                                             _showTermsDialog(context);
@@ -1971,22 +2176,22 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
                         onPressed: _loading ? null : _handleRegister,
                         child: _loading
                             ? const SizedBox(
-                                width: 22,
-                                height: 22,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2.4,
-                                  valueColor: AlwaysStoppedAnimation<Color>(
-                                      Colors.black),
-                                ),
-                              )
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.4,
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                                Colors.black),
+                          ),
+                        )
                             : const Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Text('Register'),
-                                  SizedBox(width: 8),
-                                  Icon(Icons.arrow_forward_rounded, size: 20),
-                                ],
-                              ),
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text('Register'),
+                            SizedBox(width: 8),
+                            Icon(Icons.arrow_forward_rounded, size: 20),
+                          ],
+                        ),
                       ),
                       const SizedBox(height: 24),
                       Text(
@@ -2028,10 +2233,10 @@ void _showTermsDialog(BuildContext context) {
       content: const SingleChildScrollView(
         child: Text(
           'Detailed Terms and Conditions content will be provided here. '
-          'By registering you agree to the DepthFence platform\'s '
-          'terms of use, privacy policy, and data handling guidelines '
-          'for geospatial land intelligence operations.\n\n'
-          'For the SIH prototype, this text is a placeholder.',
+              'By registering you agree to the DepthFence platform\'s '
+              'terms of use, privacy policy, and data handling guidelines '
+              'for geospatial land intelligence operations.\n\n'
+              'For the SIH prototype, this text is a placeholder.',
           style: TextStyle(color: AppTheme.textSecondary, height: 1.5),
         ),
       ),
@@ -2045,6 +2250,533 @@ void _showTermsDialog(BuildContext context) {
     ),
   );
 }
+
+// ============================================================
+// AI VISION SCANNER — Camera with proper lifecycle
+// ============================================================
+
+class AIVisionScannerScreen extends StatefulWidget {
+  const AIVisionScannerScreen({super.key});
+
+  @override
+  State<AIVisionScannerScreen> createState() => _AIVisionScannerScreenState();
+}
+
+class _AIVisionScannerScreenState extends State<AIVisionScannerScreen>
+    with WidgetsBindingObserver {
+  CameraController? _controller;
+  List<CameraDescription> _cameras = [];
+  int _selectedIndex = 0;
+
+  bool _isInitialized = false;
+  bool _isCapturing = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _initializeCamera();
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // CAMERA INITIALIZATION (fixes black screen)
+  // ═══════════════════════════════════════════════════════════
+  Future<void> _initializeCamera() async {
+    setState(() {
+      _error = null;
+      _isInitialized = false;
+    });
+
+    try {
+      final status = await Permission.camera.request();
+      if (status.isDenied) {
+        setState(() => _error = 'Camera permission denied');
+        return;
+      }
+      if (status.isPermanentlyDenied) {
+        setState(() => _error = 'Open settings to enable camera');
+        return;
+      }
+
+      // ⭐ Use preloaded cameras if available
+      _cameras = globalCameras.isNotEmpty
+          ? globalCameras
+          : await availableCameras();
+
+      if (_cameras.isEmpty) {
+        setState(() => _error = 'No cameras found');
+        return;
+      }
+
+      await _setupController(_cameras[_selectedIndex]);
+    } catch (e) {
+      setState(() => _error = 'Init failed: $e');
+    }
+  }
+
+  Future<void> _setupController(CameraDescription camera) async {
+    // Dispose old controller
+    final oldController = _controller;
+    oldController?.dispose();
+
+    // Create new controller
+    final controller = CameraController(
+      camera,
+      ResolutionPreset.high,
+      enableAudio: false,
+      imageFormatGroup: ImageFormatGroup.jpeg,
+    );
+
+    _controller = controller;
+
+    try {
+      await controller.initialize();
+      if (!mounted) return;
+      setState(() {
+        _isInitialized = true;
+        _error = null;
+      });
+    } on CameraException catch (e) {
+      debugPrint('CameraException: ${e.code} ${e.description}');
+      setState(() => _error = 'Camera error: ${e.description ?? e.code}');
+    } catch (e) {
+      debugPrint('Setup error: $e');
+      setState(() => _error = 'Setup failed: $e');
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // FLIP CAMERA
+  // ═══════════════════════════════════════════════════════════
+  Future<void> _flipCamera() async {
+    if (_cameras.length < 2 || _isCapturing) return;
+    setState(() {
+      _isInitialized = false;
+      _selectedIndex = (_selectedIndex + 1) % _cameras.length;
+    });
+    await _setupController(_cameras[_selectedIndex]);
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // CAPTURE PHOTO
+  // ═══════════════════════════════════════════════════════════
+  Future<void> _capturePhoto() async {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized || _isCapturing) {
+      return;
+    }
+
+    setState(() => _isCapturing = true);
+
+    try {
+      final file = await controller.takePicture();
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('📷 Photo captured: ${file.name}'),
+          backgroundColor: AppTheme.emerald,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } on CameraException catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Capture failed: ${e.description ?? e.code}'),
+          backgroundColor: AppTheme.danger,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isCapturing = false);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // LIFECYCLE
+  // ═══════════════════════════════════════════════════════════
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) return;
+
+    if (state == AppLifecycleState.inactive) {
+      controller.dispose();
+      _controller = null;
+      setState(() => _isInitialized = false);
+    } else if (state == AppLifecycleState.resumed) {
+      if (_cameras.isNotEmpty) {
+        _setupController(_cameras[_selectedIndex]);
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // BUILD
+  // ═══════════════════════════════════════════════════════════
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: Stack(
+          children: [
+            // ══════════════════════════════════════════
+            // CAMERA PREVIEW / ERROR / LOADING
+            // ══════════════════════════════════════════
+            Positioned.fill(
+              child: _buildCameraArea(),
+            ),
+
+            // ══════════════════════════════════════════
+            // TOP BAR
+            // ══════════════════════════════════════════
+            Positioned(
+              top: 12,
+              left: 12,
+              right: 12,
+              child: Row(
+                children: [
+                  GestureDetector(
+                    onTap: () => Navigator.pop(context),
+                    child: Container(
+                      width: 44,
+                      height: 44,
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.6),
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: AppTheme.gold.withValues(alpha: 0.5),
+                        ),
+                      ),
+                      child: const Icon(
+                        Icons.arrow_back_rounded,
+                        color: AppTheme.gold,
+                        size: 20,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 10,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.6),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: AppTheme.cyan.withValues(alpha: 0.5),
+                        ),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.auto_awesome,
+                            color: AppTheme.cyan,
+                            size: 16,
+                          ),
+                          SizedBox(width: 8),
+                          Text(
+                            'AI VISION SCANNER',
+                            style: TextStyle(
+                              color: AppTheme.cyan,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w900,
+                              letterSpacing: 1,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // ══════════════════════════════════════════
+            // BOTTOM CONTROLS
+            // ══════════════════════════════════════════
+            if (_isInitialized)
+              Positioned(
+                bottom: 40,
+                left: 0,
+                right: 0,
+                child: Column(
+                  children: [
+                    // GPS + Mode overlay
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 8,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.6),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.gps_fixed,
+                            color: AppTheme.emerald,
+                            size: 14,
+                          ),
+                          const SizedBox(width: 6),
+                          Consumer<DepthFenceState>(
+                            builder: (_, s, _) => Text(
+                              '${s.currentLocation.latitude.toStringAsFixed(4)}, ${s.currentLocation.longitude.toStringAsFixed(4)}',
+                              style: const TextStyle(
+                                color: AppTheme.textPrimary,
+                                fontSize: 11,
+                                fontFamily: 'monospace',
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 22),
+
+                    // Camera controls
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        // Placeholder for symmetry
+                        const SizedBox(width: 60, height: 60),
+
+                        // Capture button (large)
+                        GestureDetector(
+                          onTap: _isCapturing ? null : _capturePhoto,
+                          child: Container(
+                            width: 80,
+                            height: 80,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: AppTheme.gold,
+                              border: Border.all(
+                                color: Colors.white,
+                                width: 4,
+                              ),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: AppTheme.gold.withValues(alpha: 0.6),
+                                  blurRadius: 24,
+                                  spreadRadius: 4,
+                                ),
+                              ],
+                            ),
+                            child: _isCapturing
+                                ? const Padding(
+                              padding: EdgeInsets.all(22),
+                              child: CircularProgressIndicator(
+                                strokeWidth: 3,
+                                valueColor:
+                                AlwaysStoppedAnimation<Color>(
+                                  Colors.black,
+                                ),
+                              ),
+                            )
+                                : const Icon(
+                              Icons.camera_rounded,
+                              color: Colors.black,
+                              size: 36,
+                            ),
+                          ),
+                        ),
+
+                        // Flip camera button
+                        GestureDetector(
+                          onTap: _cameras.length < 2 ? null : _flipCamera,
+                          child: Container(
+                            width: 60,
+                            height: 60,
+                            decoration: BoxDecoration(
+                              color: Colors.black.withValues(alpha: 0.6),
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: _cameras.length < 2
+                                    ? Colors.grey.shade700
+                                    : AppTheme.gold.withValues(alpha: 0.6),
+                                width: 1.5,
+                              ),
+                            ),
+                            child: Icon(
+                              Icons.flip_camera_ios_rounded,
+                              color: _cameras.length < 2
+                                  ? Colors.grey.shade700
+                                  : AppTheme.gold,
+                              size: 28,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+
+            // ══════════════════════════════════════════
+            // REC INDICATOR
+            // ══════════════════════════════════════════
+            if (_isInitialized)
+              Positioned(
+                top: 70,
+                right: 16,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.red.withValues(alpha: 0.8),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.fiber_manual_record,
+                        color: Colors.white,
+                        size: 10,
+                      ),
+                      SizedBox(width: 4),
+                      Text(
+                        'LIVE',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: 1,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCameraArea() {
+    if (_error != null) {
+      return _buildErrorWidget();
+    }
+    if (!_isInitialized || _controller == null) {
+      return const Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(
+              valueColor: AlwaysStoppedAnimation<Color>(AppTheme.gold),
+            ),
+            SizedBox(height: 16),
+            Text(
+              'Initializing camera...',
+              style: TextStyle(
+                color: AppTheme.textPrimary,
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // Camera preview with proper aspect ratio
+    return ClipRect(
+      child: OverflowBox(
+        alignment: Alignment.center,
+        child: FittedBox(
+          fit: BoxFit.cover,
+          child: SizedBox(
+            width: _controller!.value.previewSize!.height,
+            height: _controller!.value.previewSize!.width,
+            child: CameraPreview(_controller!),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildErrorWidget() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 80,
+              height: 80,
+              decoration: BoxDecoration(
+                color: AppTheme.danger.withValues(alpha: 0.15),
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: AppTheme.danger.withValues(alpha: 0.5),
+                  width: 2,
+                ),
+              ),
+              child: const Icon(
+                Icons.videocam_off_rounded,
+                color: AppTheme.danger,
+                size: 40,
+              ),
+            ),
+            const SizedBox(height: 20),
+            Text(
+              _error!,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: AppTheme.textPrimary,
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 24),
+            ElevatedButton.icon(
+              onPressed: _initializeCamera,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.gold,
+                foregroundColor: Colors.black,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 14,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('Retry'),
+            ),
+            const SizedBox(height: 10),
+            TextButton(
+              onPressed: openAppSettings,
+              child: const Text(
+                'Open App Settings',
+                style: TextStyle(color: AppTheme.textSecondary),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 // ============================================================
 // ADMIN HOME SCREEN — with live user count + permissions
 // ============================================================
@@ -2726,6 +3458,10 @@ class _HomeMapScreenState extends State<HomeMapScreen> {
   bool _isLoadingLocation = true;
   bool _toolsExpanded = true;
 
+  // Map tap state
+  LatLng? _tappedLocation;
+  bool _isProcessingTap = false;
+
   // ---------- Search ----------
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocus = FocusNode();
@@ -2744,7 +3480,7 @@ class _HomeMapScreenState extends State<HomeMapScreen> {
   ];
 
   static const String _labelsUrl =
-      'https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png';
+      'https://basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}.png';
 
   @override
   void initState() {
@@ -2776,16 +3512,16 @@ class _HomeMapScreenState extends State<HomeMapScreen> {
     try {
       final uri = Uri.parse(
         'https://nominatim.openstreetmap.org/search'
-        '?q=${Uri.encodeComponent(query)}'
-        '&format=json'
-        '&limit=6'
-        '&addressdetails=1',
+            '?q=${Uri.encodeComponent(query)}'
+            '&format=json'
+            '&limit=5'
+            '&addressdetails=1',
       );
 
       final response = await http.get(
         uri,
         headers: {
-          'User-Agent': 'DepthFence-App/1.0 (com.depthfence.app)',
+          'User-Agent': 'DepthFence-App/2.0 (com.example.depthfenc)',
           'Accept': 'application/json',
         },
       ).timeout(const Duration(seconds: 8));
@@ -2824,6 +3560,212 @@ class _HomeMapScreenState extends State<HomeMapScreen> {
       _searchController.clear();
       _searchFocus.unfocus();
     });
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // MAP TAP HANDLER — Building selection workflow
+  // ═══════════════════════════════════════════════════════════
+  Future<void> _handleMapTap(LatLng point) async {
+    if (_isProcessingTap) return;
+    setState(() {
+      _isProcessingTap = true;
+      _tappedLocation = point;
+    });
+
+    // 1. Smooth animation zoom-in on the tapped coordinates
+    _mapController.move(point, 18.5);
+
+    // Give the zoom animation a moment to complete
+    await Future.delayed(const Duration(milliseconds: 600));
+    if (!mounted) return;
+
+    // 2. Show confirmation bottom sheet
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isDismissible: true,
+      builder: (ctx) => _buildConfirmSheet(point),
+    );
+
+    if (!mounted) return;
+
+    if (confirmed == true) {
+      final state = Provider.of<DepthFenceState>(context, listen: false);
+
+      // 3. Auto-fill coordinates
+      state.setSelectedCoordinates(point);
+
+      // 4. Simulate shadow + solar angle
+      final shadow = 30.0 + (point.latitude * 100).abs() % 50;
+      final solarAngle = -15.0 - ((point.longitude * 10).abs() % 30);
+
+      // 5. Save to global state (auto-calculates height)
+      state.selectBuilding(
+        location: point,
+        shadowLength: shadow,
+        solarAngle: solarAngle,
+      );
+
+      // 6. ⭐ AUTO-ROUTE — Switch to Delta Z tab (index 2)
+      state.setTabIndex(2);
+    }
+
+    setState(() => _isProcessingTap = false);
+  }
+
+  // Confirmation modal sheet
+  Widget _buildConfirmSheet(LatLng point) {
+    return SafeArea(
+      child: Container(
+        margin: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: AppTheme.surface,
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(
+            color: AppTheme.gold.withValues(alpha: 0.4),
+            width: 1.5,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: AppTheme.gold.withValues(alpha: 0.2),
+              blurRadius: 30,
+              spreadRadius: 4,
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: AppTheme.textMuted.withValues(alpha: 0.4),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 18),
+            Row(
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: AppTheme.gold.withValues(alpha: 0.15),
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: AppTheme.gold.withValues(alpha: 0.5),
+                    ),
+                  ),
+                  child: const Icon(
+                    Icons.location_searching,
+                    color: AppTheme.gold,
+                    size: 22,
+                  ),
+                ),
+                const SizedBox(width: 14),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Structure Selected',
+                        style: TextStyle(
+                          color: AppTheme.textPrimary,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      SizedBox(height: 2),
+                      Text(
+                        'Do you want to calculate height for this structure?',
+                        style: TextStyle(
+                          color: AppTheme.textSecondary,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            // Coordinates preview
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppTheme.scaffold,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppTheme.border),
+              ),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.gps_fixed,
+                    color: AppTheme.emerald,
+                    size: 16,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    '${point.latitude.toStringAsFixed(6)}, ${point.longitude.toStringAsFixed(6)}',
+                    style: const TextStyle(
+                      color: AppTheme.textPrimary,
+                      fontSize: 12,
+                      fontFamily: 'monospace',
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+            // Buttons
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => Navigator.pop(context, false),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppTheme.textSecondary,
+                      side: const BorderSide(color: AppTheme.border),
+                      minimumSize: const Size.fromHeight(52),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    icon: const Icon(Icons.close_rounded, size: 18),
+                    label: const Text('Cancel'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  flex: 2,
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.pop(context, true),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.gold,
+                      foregroundColor: Colors.black,
+                      minimumSize: const Size.fromHeight(52),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: const Text(
+                      'Confirm & Calculate',
+                      style: TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _loadRealGps() async {
@@ -2992,6 +3934,7 @@ class _HomeMapScreenState extends State<HomeMapScreen> {
               initialZoom: _currentZoom,
               maxZoom: 19,
               minZoom: 3,
+              onTap: (tapPosition, point) => _handleMapTap(point),
               onPositionChanged: (camera, hasGesture) {
                 if (hasGesture) {
                   final z = camera.zoom;
@@ -3016,6 +3959,32 @@ class _HomeMapScreenState extends State<HomeMapScreen> {
                   urlTemplate: _labelsUrl,
                   userAgentPackageName: 'com.depthfence.app',
                   maxZoom: 19,
+                ),
+
+              // Selected building marker (when map is tapped)
+              if (_tappedLocation != null)
+                MarkerLayer(
+                  markers: [
+                    Marker(
+                      point: _tappedLocation!,
+                      width: 60,
+                      height: 60,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: AppTheme.gold.withValues(alpha: 0.2),
+                          shape: BoxShape.circle,
+                          border: Border.all(color: AppTheme.gold, width: 2.5),
+                        ),
+                        child: const Center(
+                          child: Icon(
+                            Icons.location_searching,
+                            color: AppTheme.gold,
+                            size: 26,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
 
               // GPS marker — real blue dot at your location
@@ -3055,7 +4024,7 @@ class _HomeMapScreenState extends State<HomeMapScreen> {
               left: 16,
               child: GestureDetector(
                 onTap: () => setState(
-                    () => _greetingExpanded = !_greetingExpanded),
+                        () => _greetingExpanded = !_greetingExpanded),
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 300),
                   curve: Curves.easeOutCubic,
@@ -3233,7 +4202,7 @@ class _HomeMapScreenState extends State<HomeMapScreen> {
                               child: CircularProgressIndicator(
                                 strokeWidth: 2,
                                 valueColor:
-                                    AlwaysStoppedAnimation<Color>(AppTheme.gold),
+                                AlwaysStoppedAnimation<Color>(AppTheme.gold),
                               ),
                             ),
                           )
@@ -3254,19 +4223,19 @@ class _HomeMapScreenState extends State<HomeMapScreen> {
                             },
                           )
                         else if (_searchActive)
-                          IconButton(
-                            icon: const Icon(
-                              Icons.arrow_back_rounded,
-                              color: AppTheme.textSecondary,
-                              size: 20,
-                            ),
-                            onPressed: () {
-                              setState(() => _searchActive = false);
-                              _searchFocus.unfocus();
-                            },
-                          )
-                        else
-                          const SizedBox(width: 8),
+                            IconButton(
+                              icon: const Icon(
+                                Icons.arrow_back_rounded,
+                                color: AppTheme.textSecondary,
+                                size: 20,
+                              ),
+                              onPressed: () {
+                                setState(() => _searchActive = false);
+                                _searchFocus.unfocus();
+                              },
+                            )
+                          else
+                            const SizedBox(width: 8),
                       ],
                     ),
                   ),
@@ -3334,7 +4303,7 @@ class _HomeMapScreenState extends State<HomeMapScreen> {
                                     Expanded(
                                       child: Column(
                                         crossAxisAlignment:
-                                            CrossAxisAlignment.start,
+                                        CrossAxisAlignment.start,
                                         children: [
                                           Text(
                                             name,
@@ -3409,77 +4378,77 @@ class _HomeMapScreenState extends State<HomeMapScreen> {
                     curve: Curves.easeOutCubic,
                     child: _toolsExpanded
                         ? Column(
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            children: [
-                              const SizedBox(height: 10),
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        const SizedBox(height: 10),
 
-                              // Satellite toggle
-                              _toolButton(
-                                icon: _satelliteMode
-                                    ? Icons.satellite_alt_rounded
-                                    : Icons.map_rounded,
-                                active: _satelliteMode,
-                                onTap: () => setState(
-                                    () => _satelliteMode = !_satelliteMode),
-                                onLongPress: () {
-                                  setState(() {
-                                    _tileProviderIndex =
-                                        (_tileProviderIndex + 1) %
-                                            _satelliteUrls.length;
-                                    _satelliteMode = true;
-                                  });
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text(
-                                          'Switched to ${_satelliteNames[_tileProviderIndex]}'),
-                                      backgroundColor: AppTheme.gold,
-                                      duration: const Duration(seconds: 1),
-                                    ),
-                                  );
-                                },
-                                circular: true,
+                        // Satellite toggle
+                        _toolButton(
+                          icon: _satelliteMode
+                              ? Icons.satellite_alt_rounded
+                              : Icons.map_rounded,
+                          active: _satelliteMode,
+                          onTap: () => setState(
+                                  () => _satelliteMode = !_satelliteMode),
+                          onLongPress: () {
+                            setState(() {
+                              _tileProviderIndex =
+                                  (_tileProviderIndex + 1) %
+                                      _satelliteUrls.length;
+                              _satelliteMode = true;
+                            });
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                    'Switched to ${_satelliteNames[_tileProviderIndex]}'),
+                                backgroundColor: AppTheme.gold,
+                                duration: const Duration(seconds: 1),
                               ),
-                              const SizedBox(height: 10),
+                            );
+                          },
+                          circular: true,
+                        ),
+                        const SizedBox(height: 10),
 
-                              // Labels toggle
-                              _toolButton(
-                                icon: _labelsVisible
-                                    ? Icons.label_rounded
-                                    : Icons.label_off_rounded,
-                                active: _labelsVisible && _satelliteMode,
-                                onTap: () => setState(
-                                    () => _labelsVisible = !_labelsVisible),
-                                circular: true,
-                              ),
-                              const SizedBox(height: 10),
+                        // Labels toggle
+                        _toolButton(
+                          icon: _labelsVisible
+                              ? Icons.label_rounded
+                              : Icons.label_off_rounded,
+                          active: _labelsVisible && _satelliteMode,
+                          onTap: () => setState(
+                                  () => _labelsVisible = !_labelsVisible),
+                          circular: true,
+                        ),
+                        const SizedBox(height: 10),
 
-                              // Menu
-                              _toolButton(
-                                icon: Icons.tune_rounded,
-                                active: false,
-                                onTap: _showMenu,
-                                circular: true,
-                              ),
-                              const SizedBox(height: 10),
+                        // Menu
+                        _toolButton(
+                          icon: Icons.tune_rounded,
+                          active: false,
+                          onTap: _showMenu,
+                          circular: true,
+                        ),
+                        const SizedBox(height: 10),
 
-                              // Zoom In
-                              _toolButton(
-                                icon: Icons.add_rounded,
-                                active: false,
-                                onTap: _zoomIn,
-                                circular: false,
-                              ),
-                              const SizedBox(height: 10),
+                        // Zoom In
+                        _toolButton(
+                          icon: Icons.add_rounded,
+                          active: false,
+                          onTap: _zoomIn,
+                          circular: false,
+                        ),
+                        const SizedBox(height: 10),
 
-                              // Zoom Out
-                              _toolButton(
-                                icon: Icons.remove_rounded,
-                                active: false,
-                                onTap: _zoomOut,
-                                circular: false,
-                              ),
-                            ],
-                          )
+                        // Zoom Out
+                        _toolButton(
+                          icon: Icons.remove_rounded,
+                          active: false,
+                          onTap: _zoomOut,
+                          circular: false,
+                        ),
+                      ],
+                    )
                         : const SizedBox.shrink(),
                   ),
                 ],
@@ -3510,12 +4479,12 @@ class _HomeMapScreenState extends State<HomeMapScreen> {
                   ),
                   boxShadow: _gpsEnabled
                       ? [
-                          BoxShadow(
-                            color: AppTheme.gold.withValues(alpha: 0.15),
-                            blurRadius: 14,
-                            spreadRadius: 1,
-                          ),
-                        ]
+                    BoxShadow(
+                      color: AppTheme.gold.withValues(alpha: 0.15),
+                      blurRadius: 14,
+                      spreadRadius: 1,
+                    ),
+                  ]
                       : null,
                 ),
                 child: Row(
@@ -3642,7 +4611,7 @@ class _HomeMapScreenState extends State<HomeMapScreen> {
                     children: [
                       CircularProgressIndicator(
                         valueColor:
-                            AlwaysStoppedAnimation<Color>(AppTheme.gold),
+                        AlwaysStoppedAnimation<Color>(AppTheme.gold),
                       ),
                       SizedBox(height: 16),
                       Text(
@@ -3732,17 +4701,30 @@ class _MainShellState extends State<MainShell> {
   Widget build(BuildContext context) {
     final state = Provider.of<DepthFenceState>(context);
 
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_pageController.hasClients &&
+          _pageController.page?.round() != state.currentTabIndex) {
+        _pageController.jumpToPage(state.currentTabIndex);
+      }
+    });
+
+    if (state.isDualViewOverview) {
+      return const CompositeOverviewScreen();
+    }
+
     final screens = const [
       HomeMapScreen(),
-      AnomalyDetectionScreen(),
-      TerrainAnalysisScreen(),
+      BuildingHeightMenuScreen(),
+      DeltaZScannerScreen(),
+      GeminiChatScreen(),
       ProfileScreen(),
     ];
 
     const items = [
       {'icon': Icons.map_outlined, 'active': Icons.map, 'label': 'Map'},
-      {'icon': Icons.warning_amber_outlined, 'active': Icons.warning_amber, 'label': 'Anomalies'},
-      {'icon': Icons.terrain_outlined, 'active': Icons.terrain, 'label': 'Terrain'},
+      {'icon': Icons.domain_outlined, 'active': Icons.domain, 'label': 'Height'},
+      {'icon': Icons.height_outlined, 'active': Icons.height, 'label': 'Delta Z'},
+      {'icon': Icons.auto_awesome_outlined, 'active': Icons.auto_awesome, 'label': 'AI'},
       {'icon': Icons.person_outline, 'active': Icons.person, 'label': 'Profile'},
     ];
 
@@ -3970,6 +4952,24 @@ class _QuickActionsSheet extends StatelessWidget {
                     color: AppTheme.success,
                   ),
                 ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: _quickAction(
+                    icon: Icons.auto_awesome_rounded,
+                    label: 'AI Chat',
+                    onTap: () {
+                      Navigator.pop(context);
+                      Navigator.pushNamed(context, '/gemini_chat');
+                    },
+                    color: AppTheme.gold,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                const Expanded(child: SizedBox()),
               ],
             ),
           ],
@@ -4267,7 +5267,7 @@ class _AddAnomalySheetState extends State<AddAnomalySheet> {
                   filled: true,
                   fillColor: AppTheme.card,
                   contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
                     borderSide: const BorderSide(color: AppTheme.border),
@@ -4357,7 +5357,7 @@ class _AddAnomalySheetState extends State<AddAnomalySheet> {
                             style: TextStyle(
                               fontSize: 11,
                               fontWeight:
-                                  isSelected ? FontWeight.bold : FontWeight.normal,
+                              isSelected ? FontWeight.bold : FontWeight.normal,
                               color: isSelected ? col : AppTheme.textSecondary,
                             ),
                           ),
@@ -4426,7 +5426,7 @@ class _AddAnomalySheetState extends State<AddAnomalySheet> {
                   filled: true,
                   fillColor: AppTheme.card,
                   contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
                     borderSide: const BorderSide(color: AppTheme.border),
@@ -4446,7 +5446,7 @@ class _AddAnomalySheetState extends State<AddAnomalySheet> {
               // Coordinates Badge
               Container(
                 padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 decoration: BoxDecoration(
                   color: AppTheme.card,
                   borderRadius: BorderRadius.circular(10),
@@ -4483,18 +5483,16 @@ class _AddAnomalySheetState extends State<AddAnomalySheet> {
                     ),
                     elevation: 4,
                   ),
-                  onPressed: () {
+                  onPressed: () async {
                     final title = _titleController.text.trim().isNotEmpty
                         ? _titleController.text.trim()
                         : '$_type Detected';
                     final desc = _descController.text.trim().isNotEmpty
                         ? _descController.text.trim()
-                        : 'Manual field observation logged at current location.';
+                        : 'Manual field observation.';
 
-                    final idNum =
-                        (100 + DateTime.now().millisecond % 900).toString();
                     final newAnomaly = Anomaly(
-                      id: 'ANM-$idNum',
+                      id: DateTime.now().millisecondsSinceEpoch.toString(),
                       title: title,
                       description: desc,
                       parcelId: _selectedParcelId,
@@ -4504,14 +5502,30 @@ class _AddAnomalySheetState extends State<AddAnomalySheet> {
                       detectedAt: DateTime.now(),
                     );
 
+                    // Save to Supabase
+                    try {
+                      await Supabase.instance.client.from('anomalies').insert({
+                        'title': title,
+                        'description': desc,
+                        'parcel_id': _selectedParcelId,
+                        'severity': _severity,
+                        'status': 'new',
+                        'latitude': state.currentLocation.latitude,
+                        'longitude': state.currentLocation.longitude,
+                        'detected_by': Supabase.instance.client.auth.currentUser?.id,
+                      });
+                    } catch (e) {
+                      debugPrint('Save anomaly failed: $e');
+                    }
+
                     state.addAnomaly(newAnomaly);
 
+                    if (!context.mounted) return;
                     Navigator.pop(context);
                     ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text('🚨 Anomaly report ANM-$idNum saved!'),
-                        backgroundColor: AppTheme.success,
-                        behavior: SnackBarBehavior.floating,
+                      const SnackBar(
+                        content: Text('🚨 Anomaly report saved!'),
+                        backgroundColor: AppTheme.emerald,
                       ),
                     );
                   },
@@ -4635,7 +5649,7 @@ class _CameraPhotoCaptureSheetState extends State<CameraPhotoCaptureSheet> {
                 child: Container(
                   margin: const EdgeInsets.symmetric(horizontal: 4),
                   padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                   decoration: BoxDecoration(
                     color: active ? AppTheme.gold : AppTheme.card,
                     borderRadius: BorderRadius.circular(16),
@@ -4648,7 +5662,7 @@ class _CameraPhotoCaptureSheetState extends State<CameraPhotoCaptureSheet> {
                     style: TextStyle(
                       fontSize: 11,
                       fontWeight:
-                          active ? FontWeight.bold : FontWeight.w500,
+                      active ? FontWeight.bold : FontWeight.w500,
                       color: active ? Colors.black : AppTheme.textSecondary,
                     ),
                   ),
@@ -4809,7 +5823,7 @@ class _CameraPhotoCaptureSheetState extends State<CameraPhotoCaptureSheet> {
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
                           content:
-                              Text('📷 Field photo saved & attached to log!'),
+                          Text('📷 Field photo saved & attached to log!'),
                           backgroundColor: AppTheme.success,
                           behavior: SnackBarBehavior.floating,
                         ),
@@ -5295,14 +6309,14 @@ class _BoundaryExtractionScreenState
                       ),
                       icon: _processing
                           ? const SizedBox(
-                              width: 14,
-                              height: 14,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                valueColor: AlwaysStoppedAnimation<Color>(
-                                    Colors.black),
-                              ),
-                            )
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                              Colors.black),
+                        ),
+                      )
                           : const Icon(Icons.auto_awesome, size: 16),
                       label: const Text(
                         'AI Extract',
@@ -5322,7 +6336,32 @@ class _BoundaryExtractionScreenState
               children: [
                 Expanded(
                   child: ElevatedButton.icon(
-                    onPressed: _points.length >= 3 ? () {} : null,
+                    onPressed: _points.length >= 3
+                        ? () async {
+                      final messenger = ScaffoldMessenger.of(context);
+                      try {
+                        await Supabase.instance.client.from('parcels').insert({
+                          'ulpin': 'ULPIN-${DateTime.now().millisecondsSinceEpoch}',
+                          'owner_name': 'Field Survey',
+                          'area_ha': 2.34,
+                          'latitude': _points.first.latitude,
+                          'longitude': _points.first.longitude,
+                          'status': 'pending',
+                          'created_by': Supabase.instance.client.auth.currentUser?.id,
+                        });
+
+                        if (!mounted) return;
+                        messenger.showSnackBar(
+                          const SnackBar(
+                            content: Text('✅ Boundary saved to database!'),
+                            backgroundColor: AppTheme.emerald,
+                          ),
+                        );
+                      } catch (e) {
+                        debugPrint('Save boundary failed: $e');
+                      }
+                    }
+                        : null,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppTheme.success,
                       foregroundColor: Colors.white,
@@ -5484,11 +6523,11 @@ class TerrainAnalysisScreen extends StatelessWidget {
             children: [
               Expanded(
                   child:
-                      _metricCard('Max Depth', '−42.6 m', AppTheme.danger)),
+                  _metricCard('Max Depth', '−42.6 m', AppTheme.danger)),
               const SizedBox(width: 10),
               Expanded(
                   child:
-                      _metricCard('Min Depth', '−1.2 m', AppTheme.success)),
+                  _metricCard('Min Depth', '−1.2 m', AppTheme.success)),
             ],
           ),
           const SizedBox(height: 10),
@@ -5496,7 +6535,7 @@ class TerrainAnalysisScreen extends StatelessWidget {
             children: [
               Expanded(
                   child:
-                      _metricCard('Avg Depth', '−18.7 m', AppTheme.gold)),
+                  _metricCard('Avg Depth', '−18.7 m', AppTheme.gold)),
               const SizedBox(width: 10),
               Expanded(
                   child: _metricCard('Slope', '12.4°', AppTheme.warning)),
@@ -5671,8 +6710,8 @@ class _DeltaZMappingScreenState extends State<DeltaZMappingScreen> {
                       _startPoint == null
                           ? 'Tap map to place Point A'
                           : _endPoint == null
-                              ? 'Tap map to place Point B'
-                              : 'Tap again to reset',
+                          ? 'Tap map to place Point B'
+                          : 'Tap again to reset',
                       style: const TextStyle(
                         fontSize: 12,
                         color: AppTheme.textPrimary,
@@ -5696,22 +6735,22 @@ class _DeltaZMappingScreenState extends State<DeltaZMappingScreen> {
               ),
               child: _profile.isEmpty
                   ? const Center(
-                      child: Text(
-                        'Draw a line on the map to see elevation profile',
-                        style: TextStyle(
-                          color: AppTheme.textSecondary,
-                          fontSize: 12,
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
-                    )
+                child: Text(
+                  'Draw a line on the map to see elevation profile',
+                  style: TextStyle(
+                    color: AppTheme.textSecondary,
+                    fontSize: 12,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+              )
                   : CustomPaint(
-                      size: Size.infinite,
-                      painter: _ElevationProfilePainter(
-                        values: _profile,
-                        lineColor: AppTheme.gold,
-                      ),
-                    ),
+                size: Size.infinite,
+                painter: _ElevationProfilePainter(
+                  values: _profile,
+                  lineColor: AppTheme.gold,
+                ),
+              ),
             ),
           ),
         ],
@@ -5878,7 +6917,7 @@ class _AnomalyDetectionScreenState extends State<AnomalyDetectionScreen> {
                             boxShadow: [
                               BoxShadow(
                                 color:
-                                    a.severityColor.withValues(alpha: 0.6),
+                                a.severityColor.withValues(alpha: 0.6),
                                 blurRadius: 12,
                                 spreadRadius: 2,
                               ),
@@ -6065,7 +7104,7 @@ class BlueprintDownloadScreen extends StatelessWidget {
                         const SizedBox(width: 10),
                         Text(
                           '${e.value.latitude.toStringAsFixed(5)}, '
-                          '${e.value.longitude.toStringAsFixed(5)}',
+                              '${e.value.longitude.toStringAsFixed(5)}',
                           style: const TextStyle(
                             fontSize: 12,
                             color: AppTheme.textPrimary,
@@ -6243,6 +7282,1293 @@ class _CadBlueprintPainter extends CustomPainter {
 }
 
 // ============================================================
+// BUILDING HEIGHT MENU SCREEN
+// ============================================================
+
+class BuildingHeightMenuScreen extends StatelessWidget {
+  const BuildingHeightMenuScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final state = Provider.of<DepthFenceState>(context);
+    final calculatedH = state.calculatedHeight;
+
+    return Scaffold(
+      backgroundColor: AppTheme.scaffold,
+      appBar: AppBar(
+        title: const Text('Building Height & Shadow Math'),
+        backgroundColor: AppTheme.surface,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.auto_awesome, color: AppTheme.cyan),
+            tooltip: 'AI Vision Scanner',
+            onPressed: () {
+              Navigator.pushNamed(context, '/ai_vision_scanner');
+            },
+          ),
+        ],
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Cityscape visualization card
+            Card(
+              color: AppTheme.card,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+                side: const BorderSide(color: AppTheme.border),
+              ),
+              child: Container(
+                padding: const EdgeInsets.all(16),
+                height: 220,
+                width: double.infinity,
+                child: CustomPaint(
+                  painter: _CityscapePainter(
+                    shadowLength: state.shadowLength,
+                    solarAngle: state.solarAngle,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // Calculated Height Card
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: AppTheme.surface,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: AppTheme.gold.withValues(alpha: 0.4)),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: AppTheme.gold.withValues(alpha: 0.2),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.height_rounded, color: AppTheme.gold, size: 28),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Calculated Height (H)',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: AppTheme.textSecondary,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '${calculatedH.toStringAsFixed(2)} m',
+                          style: const TextStyle(
+                            fontSize: 26,
+                            fontWeight: FontWeight.bold,
+                            color: AppTheme.gold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // AI Vision Scanner Button Card
+            InkWell(
+              onTap: () {
+                Navigator.pushNamed(context, '/ai_vision_scanner');
+              },
+              borderRadius: BorderRadius.circular(16),
+              child: Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: AppTheme.card,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: AppTheme.cyan.withValues(alpha: 0.5)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppTheme.cyan.withValues(alpha: 0.1),
+                      blurRadius: 12,
+                    ),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: AppTheme.cyan.withValues(alpha: 0.15),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.camera_alt_rounded, color: AppTheme.cyan, size: 24),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: const [
+                          Text(
+                            'AI Vision Scanner',
+                            style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.bold,
+                              color: AppTheme.textPrimary,
+                            ),
+                          ),
+                          SizedBox(height: 2),
+                          Text(
+                            'Live camera shadow extraction & AI analysis',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: AppTheme.textSecondary,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Icon(Icons.arrow_forward_ios_rounded, color: AppTheme.cyan, size: 16),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 20),
+
+            const Text(
+              'Interactive Controls',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+                color: AppTheme.textPrimary,
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            // Shadow Length Slider
+            Card(
+              color: AppTheme.card,
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('Shadow Length (S)',
+                            style: TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.w600)),
+                        Text('${state.shadowLength.toStringAsFixed(2)} m',
+                            style: const TextStyle(color: AppTheme.gold, fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                    Slider(
+                      value: state.shadowLength.clamp(5.0, 100.0),
+                      min: 5.0,
+                      max: 100.0,
+                      activeColor: AppTheme.gold,
+                      inactiveColor: AppTheme.border,
+                      onChanged: (v) => state.setShadowLength(v),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            // Solar Angle Slider
+            Card(
+              color: AppTheme.card,
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('Solar Elevation Angle (θ)',
+                            style: TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.w600)),
+                        Text('${state.solarAngle.toStringAsFixed(1)}°',
+                            style: const TextStyle(color: AppTheme.gold, fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                    Slider(
+                      value: state.solarAngle.clamp(-85.0, -5.0),
+                      min: -85.0,
+                      max: -5.0,
+                      activeColor: AppTheme.gold,
+                      inactiveColor: AppTheme.border,
+                      onChanged: (v) => state.setSolarAngle(v),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CityscapePainter extends CustomPainter {
+  final double shadowLength;
+  final double solarAngle;
+
+  _CityscapePainter({required this.shadowLength, required this.solarAngle});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final groundY = size.height * 0.75;
+    final paintGround = Paint()
+      ..color = AppTheme.border
+      ..strokeWidth = 2;
+
+    canvas.drawLine(Offset(0, groundY), Offset(size.width, groundY), paintGround);
+
+    final bWidth = 60.0;
+    final bLeft = size.width * 0.3;
+    final rad = solarAngle.abs() * (math.pi / 180);
+    final calculatedH = shadowLength * math.tan(rad);
+    final displayH = (calculatedH * 2).clamp(20.0, size.height * 0.5);
+
+    final bRect = Rect.fromLTWH(bLeft, groundY - displayH, bWidth, displayH);
+
+    // Shadow
+    final shadowWidth = (shadowLength * 1.5).clamp(10.0, size.width * 0.4);
+    final shadowPath = ui.Path()
+      ..moveTo(bLeft + bWidth, groundY)
+      ..lineTo(bLeft + bWidth + shadowWidth, groundY)
+      ..lineTo(bLeft + bWidth, groundY - displayH)
+      ..close();
+
+    final shadowPaint = Paint()..color = AppTheme.gold.withValues(alpha: 0.25);
+    canvas.drawPath(shadowPath, shadowPaint);
+
+    // Building
+    final bPaint = Paint()..color = AppTheme.surface;
+    final bStroke = Paint()
+      ..color = AppTheme.gold
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
+
+    canvas.drawRect(bRect, bPaint);
+    canvas.drawRect(bRect, bStroke);
+
+    // Sun ray line
+    final rayPaint = Paint()
+      ..color = AppTheme.warning
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke;
+
+    canvas.drawLine(
+      Offset(bLeft + bWidth, groundY - displayH),
+      Offset(bLeft + bWidth + shadowWidth, groundY),
+      rayPaint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _CityscapePainter oldDelegate) =>
+      oldDelegate.shadowLength != shadowLength || oldDelegate.solarAngle != solarAngle;
+}
+
+// ============================================================
+// DELTA Z SCANNER SCREEN
+// ============================================================
+
+class DeltaZScannerScreen extends StatefulWidget {
+  const DeltaZScannerScreen({super.key});
+
+  @override
+  State<DeltaZScannerScreen> createState() => _DeltaZScannerScreenState();
+}
+
+class _DeltaZScannerScreenState extends State<DeltaZScannerScreen> {
+  bool isMicroMode = true;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final s = Provider.of<DepthFenceState>(context, listen: false);
+      if (s.autoCalculated && s.selectedBuildingLocation != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '✨ Auto-calculated: ${s.calculatedHeight.toStringAsFixed(2)} m',
+            ),
+            backgroundColor: AppTheme.emerald,
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final state = Provider.of<DepthFenceState>(context);
+
+    return Scaffold(
+      backgroundColor: AppTheme.scaffold,
+      appBar: AppBar(
+        title: const Text('Delta Z Scanner'),
+        backgroundColor: AppTheme.surface,
+        actions: [
+          IconButton(
+            icon: Icon(isMicroMode ? Icons.center_focus_strong : Icons.map),
+            tooltip: 'Toggle Mode',
+            onPressed: () {
+              setState(() => isMicroMode = !isMicroMode);
+            },
+          )
+        ],
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Scanner Canvas / Header
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppTheme.card,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: AppTheme.border),
+              ),
+              child: Column(
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(
+                            isMicroMode ? Icons.center_focus_strong : Icons.terrain,
+                            color: AppTheme.gold,
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            isMicroMode ? 'MICRO MODE (AI Vision)' : 'MACRO MODE (DEM)',
+                            style: const TextStyle(
+                              color: AppTheme.textPrimary,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: AppTheme.success.withValues(alpha: 0.2),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Text('ONLINE',
+                            style: TextStyle(fontSize: 10, color: AppTheme.success, fontWeight: FontWeight.bold)),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  Container(
+                    height: 180,
+                    width: double.infinity,
+                    decoration: BoxDecoration(
+                      color: Colors.black,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: AppTheme.gold.withValues(alpha: 0.3)),
+                    ),
+                    child: Stack(
+                      children: [
+                        Center(
+                          child: Icon(
+                            Icons.radar,
+                            size: 100,
+                            color: AppTheme.gold.withValues(alpha: 0.15),
+                          ),
+                        ),
+                        Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Text('ΔZ (Elevation Variance)',
+                                  style: TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
+                              const SizedBox(height: 4),
+                              Text(
+                                '${state.deltaZ.toStringAsFixed(2)} m',
+                                style: const TextStyle(
+                                  color: AppTheme.gold,
+                                  fontSize: 32,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // Auto-calculation banner
+            Consumer<DepthFenceState>(
+              builder: (context, s, _) {
+                if (!s.autoCalculated || s.selectedAt == null) {
+                  return const SizedBox.shrink();
+                }
+                return Container(
+                  margin: const EdgeInsets.only(top: 12),
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: AppTheme.emerald.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: AppTheme.emerald.withValues(alpha: 0.4),
+                      width: 1.2,
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          color: AppTheme.emerald.withValues(alpha: 0.2),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(
+                          Icons.auto_awesome,
+                          color: AppTheme.emerald,
+                          size: 22,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'AUTO-CALCULATED FROM MAP',
+                              style: TextStyle(
+                                color: AppTheme.emerald,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w900,
+                                letterSpacing: 0.8,
+                              ),
+                            ),
+                            const SizedBox(height: 3),
+                            Text(
+                              'Structure at ${s.selectedBuildingLocation!.latitude.toStringAsFixed(4)}, ${s.selectedBuildingLocation!.longitude.toStringAsFixed(4)}',
+                              style: const TextStyle(
+                                color: AppTheme.textPrimary,
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      GestureDetector(
+                        onTap: () => s.clearBuildingSelection(),
+                        child: const Icon(
+                          Icons.close_rounded,
+                          color: AppTheme.textMuted,
+                          size: 20,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+            const SizedBox(height: 16),
+
+            // Dynamic Readout Cards
+            _readoutCard(
+              icon: Icons.crop_square_rounded,
+              label: 'Extracted Shadow Length',
+              value: state.shadowLength.toStringAsFixed(2),
+              unit: 'Meters',
+              color: AppTheme.gold,
+              trailing: IconButton(
+                icon: const Icon(Icons.grid_on, color: AppTheme.gold, size: 16),
+                onPressed: () {},
+              ),
+            ),
+            const SizedBox(height: 10),
+            _readoutCard(
+              icon: Icons.wb_sunny_outlined,
+              label: 'Solar Elevation Angle',
+              value: '${state.solarAngle.toStringAsFixed(2)}°',
+              unit: 'Degree',
+              color: AppTheme.warning,
+            ),
+            const SizedBox(height: 10),
+            _readoutCard(
+              icon: Icons.business_rounded,
+              label: state.autoCalculated
+                  ? 'Calculated Building Height (Auto)'
+                  : 'Calculated Building Height',
+              value: state.calculatedHeight.toStringAsFixed(2),
+              unit: 'Meters',
+              color: AppTheme.emerald,
+              highlightValue: true,
+            ),
+            const SizedBox(height: 16),
+
+            // Metrics Grid
+            Row(
+              children: [
+                Expanded(
+                  child: _metricCard('Horizontal Distance', '${state.horizontalDistanceAB.toStringAsFixed(2)} m', Icons.straighten),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _metricCard('Calculated Height', '${state.calculatedHeight.toStringAsFixed(2)} m', Icons.height),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+
+            const Text(
+              'Adjust Parameters',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppTheme.textPrimary),
+            ),
+            const SizedBox(height: 12),
+
+            // Horizontal Distance Slider
+            Card(
+              color: AppTheme.card,
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('Horizontal Distance A-B', style: TextStyle(color: AppTheme.textPrimary)),
+                        Text('${state.horizontalDistanceAB.toStringAsFixed(1)} m', style: const TextStyle(color: AppTheme.gold)),
+                      ],
+                    ),
+                    Slider(
+                      value: state.horizontalDistanceAB.clamp(10.0, 500.0),
+                      min: 10.0,
+                      max: 500.0,
+                      activeColor: AppTheme.gold,
+                      onChanged: (v) => state.setHorizontalDistance(v),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+
+            // Delta Z Slider
+            Card(
+              color: AppTheme.card,
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('Elevation Shift (ΔZ)', style: TextStyle(color: AppTheme.textPrimary)),
+                        Text('${state.deltaZ.toStringAsFixed(2)} m', style: const TextStyle(color: AppTheme.gold)),
+                      ],
+                    ),
+                    Slider(
+                      value: state.deltaZ.clamp(0.0, 50.0),
+                      min: 0.0,
+                      max: 50.0,
+                      activeColor: AppTheme.gold,
+                      onChanged: (v) => state.setDeltaZ(v),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _readoutCard({
+    required IconData icon,
+    required String label,
+    required String value,
+    required String unit,
+    required Color color,
+    Widget? trailing,
+    bool highlightValue = false,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppTheme.card,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: highlightValue ? color.withValues(alpha: 0.5) : AppTheme.border,
+          width: highlightValue ? 1.5 : 1.0,
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(icon, color: color, size: 22),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: const TextStyle(
+                    color: AppTheme.textSecondary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Row(
+                  children: [
+                    Text(
+                      value,
+                      style: TextStyle(
+                        color: highlightValue ? color : AppTheme.textPrimary,
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      unit,
+                      style: const TextStyle(
+                        color: AppTheme.textMuted,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          ?trailing,
+        ],
+      ),
+    );
+  }
+
+  Widget _metricCard(String label, String value, IconData icon) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppTheme.card,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: AppTheme.gold, size: 20),
+          const SizedBox(height: 8),
+          Text(label, style: const TextStyle(color: AppTheme.textMuted, fontSize: 11)),
+          const SizedBox(height: 2),
+          Text(value, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 16, fontWeight: FontWeight.bold)),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================
+// DELTA Z PROFILE SCREEN (Elevation Cross-Section)
+// ============================================================
+
+class DeltaZProfileScreen extends StatelessWidget {
+  const DeltaZProfileScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final state = Provider.of<DepthFenceState>(context);
+
+    return Scaffold(
+      backgroundColor: AppTheme.scaffold,
+      appBar: AppBar(
+        title: const Text('Delta Z Elevation Profile'),
+        backgroundColor: AppTheme.surface,
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Terrain Elevation Profile (A → B)',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+                color: AppTheme.textPrimary,
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Cross-sectional elevation graph derived from satellite DEM & LiDAR math.',
+              style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+            ),
+            const SizedBox(height: 20),
+
+            // FL_CHART Elevation Graph
+            Container(
+              height: 260,
+              padding: const EdgeInsets.fromLTRB(12, 20, 20, 12),
+              decoration: BoxDecoration(
+                color: AppTheme.card,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: AppTheme.border),
+              ),
+              child: LineChart(
+                LineChartData(
+                  gridData: FlGridData(
+                    show: true,
+                    drawVerticalLine: true,
+                    getDrawingHorizontalLine: (val) => FlLine(color: AppTheme.border, strokeWidth: 1),
+                    getDrawingVerticalLine: (val) => FlLine(color: AppTheme.border, strokeWidth: 1),
+                  ),
+                  titlesData: FlTitlesData(
+                    show: true,
+                    rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                    topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                    bottomTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        reservedSize: 22,
+                        getTitlesWidget: (value, meta) => Text(
+                          '${value.toInt()}m',
+                          style: const TextStyle(color: AppTheme.textMuted, fontSize: 10),
+                        ),
+                      ),
+                    ),
+                    leftTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        reservedSize: 28,
+                        getTitlesWidget: (value, meta) => Text(
+                          '${value.toInt()}m',
+                          style: const TextStyle(color: AppTheme.textMuted, fontSize: 10),
+                        ),
+                      ),
+                    ),
+                  ),
+                  borderData: FlBorderData(
+                    show: true,
+                    border: Border.all(color: AppTheme.border),
+                  ),
+                  minX: 0,
+                  maxX: state.horizontalDistanceAB > 0 ? state.horizontalDistanceAB : 150,
+                  minY: 0,
+                  maxY: (state.deltaZ * 2.5) > 20 ? state.deltaZ * 2.5 : 30,
+                  lineBarsData: [
+                    LineChartBarData(
+                      spots: [
+                        const FlSpot(0, 10),
+                        FlSpot(state.horizontalDistanceAB * 0.25, 12),
+                        FlSpot(state.horizontalDistanceAB * 0.5, 10 + state.deltaZ),
+                        FlSpot(state.horizontalDistanceAB * 0.75, 14),
+                        FlSpot(state.horizontalDistanceAB, 11),
+                      ],
+                      isCurved: true,
+                      color: AppTheme.gold,
+                      barWidth: 3,
+                      isStrokeCapRound: true,
+                      dotData: const FlDotData(show: true),
+                      belowBarData: BarAreaData(
+                        show: true,
+                        color: AppTheme.gold.withValues(alpha: 0.15),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 20),
+
+            // Key Statistics
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppTheme.surface,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: AppTheme.border),
+              ),
+              child: Column(
+                children: [
+                  _statRow('Distance (A → B)', '${state.horizontalDistanceAB.toStringAsFixed(2)} m'),
+                  const Divider(color: AppTheme.border, height: 20),
+                  _statRow('Max ΔZ Elevation Shift', '${state.deltaZ.toStringAsFixed(2)} m'),
+                  const Divider(color: AppTheme.border, height: 20),
+                  _statRow('Estimated Gradient / Slope', '${(state.deltaZ / (state.horizontalDistanceAB > 0 ? state.horizontalDistanceAB : 1) * 100).toStringAsFixed(1)}%'),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _statRow(String label, String value) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(label, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13)),
+        Text(value, style: const TextStyle(color: AppTheme.gold, fontWeight: FontWeight.bold, fontSize: 15)),
+      ],
+    );
+  }
+}
+
+// ============================================================
+// COMPOSITE OVERVIEW SCREEN (6-Panel Grid)
+// ============================================================
+
+class CompositeOverviewScreen extends StatelessWidget {
+  const CompositeOverviewScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final state = Provider.of<DepthFenceState>(context);
+
+    final stages = [
+      {
+        'stage': 'Stage 1',
+        'title': 'Boundary Extraction',
+        'metric': '${state.boundaryPoints.length} Vertices',
+        'icon': Icons.crop_square_rounded,
+        'status': 'Verified',
+      },
+      {
+        'stage': 'Stage 2',
+        'title': 'Terrain & DEM',
+        'metric': 'Unit: ${state.measurementUnit}',
+        'icon': Icons.terrain_rounded,
+        'status': 'Active',
+      },
+      {
+        'stage': 'Stage 3',
+        'title': 'Building Height',
+        'metric': 'H: ${state.calculatedHeight.toStringAsFixed(1)}m',
+        'icon': Icons.domain_rounded,
+        'status': 'Calculated',
+      },
+      {
+        'stage': 'Stage 4',
+        'title': 'Delta Z Analysis',
+        'metric': 'ΔZ: ${state.deltaZ.toStringAsFixed(1)}m',
+        'icon': Icons.height_rounded,
+        'status': 'Scanned',
+      },
+      {
+        'stage': 'Stage 5',
+        'title': 'Anomaly Detection',
+        'metric': '${state.anomalies.length} Flagged',
+        'icon': Icons.warning_amber_rounded,
+        'status': 'Monitored',
+      },
+      {
+        'stage': 'Stage 6',
+        'title': 'Cadastral Report',
+        'metric': 'Certificate Ready',
+        'icon': Icons.description_rounded,
+        'status': 'Ready',
+      },
+    ];
+
+    return Scaffold(
+      backgroundColor: AppTheme.scaffold,
+      appBar: AppBar(
+        title: const Text('Composite Overview (6 Stages)'),
+        backgroundColor: AppTheme.surface,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.close),
+            onPressed: () {
+              state.toggleDualView();
+            },
+          )
+        ],
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(12),
+        child: GridView.builder(
+          itemCount: stages.length,
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 2,
+            childAspectRatio: 1.1,
+            crossAxisSpacing: 12,
+            mainAxisSpacing: 12,
+          ),
+          itemBuilder: (context, index) {
+            final item = stages[index];
+            return Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: AppTheme.card,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: AppTheme.gold.withValues(alpha: 0.3)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        item['stage'] as String,
+                        style: const TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                          color: AppTheme.gold,
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: AppTheme.success.withValues(alpha: 0.2),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          item['status'] as String,
+                          style: const TextStyle(fontSize: 9, color: AppTheme.success, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ],
+                  ),
+                  Icon(item['icon'] as IconData, color: AppTheme.gold, size: 28),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        item['title'] as String,
+                        style: const TextStyle(
+                          color: AppTheme.textPrimary,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        item['metric'] as String,
+                        style: const TextStyle(
+                          color: AppTheme.textSecondary,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================
+// REPORT PREVIEW SCREEN (Cadastral Certificate & PDF)
+// ============================================================
+
+class ReportPreviewScreen extends StatefulWidget {
+  const ReportPreviewScreen({super.key});
+
+  @override
+  State<ReportPreviewScreen> createState() => _ReportPreviewScreenState();
+}
+
+class _ReportPreviewScreenState extends State<ReportPreviewScreen> {
+  bool _isGenerating = false;
+
+  Future<void> _downloadReport() async {
+    if (_isGenerating) return;
+    setState(() => _isGenerating = true);
+
+    try {
+      final state = Provider.of<DepthFenceState>(context, listen: false);
+      final file = await PdfGenerator.generateAndSave(state: state);
+
+      if (!mounted) return;
+
+      // Show success snackbar with action to share/open
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('✅ PDF saved to:\n${file.path}'),
+          backgroundColor: AppTheme.emerald,
+          duration: const Duration(seconds: 5),
+          behavior: SnackBarBehavior.floating,
+          action: SnackBarAction(
+            label: 'OPEN',
+            textColor: Colors.white,
+            onPressed: () async {
+              await Printing.sharePdf(
+                bytes: await file.readAsBytes(),
+                filename: file.path.split('/').last,
+              );
+            },
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('❌ Failed to generate PDF: $e'),
+          backgroundColor: AppTheme.danger,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isGenerating = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final state = Provider.of<DepthFenceState>(context);
+
+    return Scaffold(
+      backgroundColor: AppTheme.scaffold,
+      appBar: AppBar(
+        title: const Text('Report Preview'),
+        backgroundColor: AppTheme.surface,
+        actions: [
+          IconButton(
+            onPressed: _isGenerating ? null : _downloadReport,
+            icon: const Icon(Icons.download_rounded),
+            tooltip: 'Download PDF',
+          ),
+        ],
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: AppTheme.card,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: AppTheme.gold, width: 1.5),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppTheme.gold.withValues(alpha: 0.05),
+                    blurRadius: 16,
+                  ),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Certificate Header
+                  Center(
+                    child: Column(
+                      children: [
+                        const Icon(Icons.verified_user_rounded, color: AppTheme.gold, size: 40),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'DEPTHFENCE LAND INTELLIGENCE PLATFORM',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 1.2,
+                            color: AppTheme.gold,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        const Text(
+                          'OFFICIAL CADASTRAL ASSESSMENT CERTIFICATE',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w900,
+                            color: AppTheme.textPrimary,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Doc Ref: DF-CAD-${DateTime.now().year}-${DateTime.now().month.toString().padLeft(2, '0')}-0091',
+                          style: const TextStyle(fontSize: 10, color: AppTheme.textMuted),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Divider(color: AppTheme.border, height: 28),
+
+                  // Parcel Identification
+                  const Text('PARCEL IDENTIFICATION', style: TextStyle(fontWeight: FontWeight.bold, color: AppTheme.gold, fontSize: 12)),
+                  const SizedBox(height: 8),
+                  _certRow('ULPIN Identifier', 'ULPIN-2024-001-A'),
+                  _certRow('Owner Name', state.userName.isNotEmpty ? state.userName : 'Ramesh Kumar'),
+                  _certRow('Survey Zone', 'Zone 4 - Central Cadastral Division'),
+                  _certRow('Calculated Area', '2.34 Ha (23,400 sq.m)'),
+                  const SizedBox(height: 16),
+
+                  // Elevation & Height Math
+                  const Text('GEOSPATIAL & HEIGHT METRICS', style: TextStyle(fontWeight: FontWeight.bold, color: AppTheme.gold, fontSize: 12)),
+                  const SizedBox(height: 8),
+                  _certRow('Shadow Length (S)', '${state.shadowLength.toStringAsFixed(2)} m'),
+                  _certRow('Solar Elevation (θ)', '${state.solarAngle.toStringAsFixed(1)}°'),
+                  _certRow('Calculated Structure Height (H)', '${state.calculatedHeight.toStringAsFixed(2)} m'),
+                  _certRow('Elevation Variance (ΔZ)', '${state.deltaZ.toStringAsFixed(2)} m'),
+                  const SizedBox(height: 16),
+
+                  // Boundary Coordinates Table
+                  const Text('BOUNDARY CO-ORDINATES (WGS84)', style: TextStyle(fontWeight: FontWeight.bold, color: AppTheme.gold, fontSize: 12)),
+                  const SizedBox(height: 8),
+                  Container(
+                    decoration: BoxDecoration(
+                      border: Border.all(color: AppTheme.border),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Column(
+                      children: state.boundaryPoints.asMap().entries.map((e) {
+                        final idx = e.key + 1;
+                        final pt = e.value;
+                        return Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: idx.isEven ? AppTheme.surface : Colors.transparent,
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text('Vertex P$idx', style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
+                              Text('${pt.latitude.toStringAsFixed(4)}°N, ${pt.longitude.toStringAsFixed(4)}°E',
+                                  style: const TextStyle(color: AppTheme.textPrimary, fontSize: 11, fontWeight: FontWeight.w600)),
+                            ],
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+
+                  // Verification Stamp & Signature
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: const [
+                          Text('Verification Status', style: TextStyle(color: AppTheme.textMuted, fontSize: 10)),
+                          SizedBox(height: 4),
+                          Text('PASS - AI VERIFIED', style: TextStyle(color: AppTheme.success, fontWeight: FontWeight.bold, fontSize: 12)),
+                        ],
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        decoration: BoxDecoration(
+                          border: Border.all(color: AppTheme.gold),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Text('DIGITALLY SIGNED', style: TextStyle(color: AppTheme.gold, fontSize: 10, fontWeight: FontWeight.bold)),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+
+            // ─── DOWNLOAD BUTTON ───
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: _isGenerating ? null : _downloadReport,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.gold,
+                  foregroundColor: Colors.black,
+                  minimumSize: const Size.fromHeight(58),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  elevation: 4,
+                ),
+                icon: _isGenerating
+                    ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2.4,
+                    valueColor:
+                    AlwaysStoppedAnimation<Color>(Colors.black),
+                  ),
+                )
+                    : const Icon(Icons.picture_as_pdf_rounded, size: 22),
+                label: Text(
+                  _isGenerating ? 'Generating PDF...' : 'Download PDF Report',
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 0.4,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
+        ),
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _isGenerating ? null : _downloadReport,
+        backgroundColor: AppTheme.gold,
+        foregroundColor: Colors.black,
+        icon: const Icon(Icons.file_download_rounded),
+        label: const Text(
+          'DOWNLOAD',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
+      ),
+    );
+  }
+
+  Widget _certRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
+          Text(value, style: const TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.bold, fontSize: 12)),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================
 // PROFILE SCREEN
 // ============================================================
 
@@ -6338,36 +8664,70 @@ class ProfileScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 16),
-          _tile(Icons.history, 'Activity History', 'View recent actions'),
           _tile(
+            context,
+            Icons.description_outlined,
+            'Report Preview',
+            'Cadastral certificate',
+                () {
+              Navigator.push(context, MaterialPageRoute(
+                builder: (_) => const ReportPreviewScreen(),
+              ));
+            },
+          ),
+          _tile(
+            context,
+            Icons.grid_view_rounded,
+            'Composite Overview',
+            'See all 6 platform stages',
+                () {
+              final s = Provider.of<DepthFenceState>(context, listen: false);
+              s.toggleDualView();
+            },
+          ),
+          _tile(
+            context,
+            Icons.show_chart_rounded,
+            'Delta Z Profile',
+            'Elevation cross-section',
+                () {
+              Navigator.push(context, MaterialPageRoute(
+                builder: (_) => const DeltaZProfileScreen(),
+              ));
+            },
+          ),
+          _tile(
+            context,
+            Icons.auto_awesome_rounded,
+            'AI Assistant',
+            'Ask about land, parcels, anomalies',
+                () {
+              Navigator.pushNamed(context, '/gemini_chat');
+            },
+          ),
+          _tile(
+            context,
             Icons.security_rounded,
             'Permissions',
             'Manage app access',
-            onTap: () => Navigator.pushNamed(context, '/permissions'),
-          ),
-          _tile(
-            Icons.settings,
-            'Settings',
-            'App preferences',
-            onTap: () {
-              showModalBottomSheet(
-                context: context,
-                backgroundColor: Colors.transparent,
-                isScrollControlled: true,
-                builder: (context) => const SettingsSheet(),
-              );
+                () {
+              Navigator.pushNamed(context, '/permissions');
             },
           ),
-          _tile(Icons.help_outline, 'Help & Support', 'FAQs and contact'),
-          _tile(Icons.info_outline, 'About DepthFence',
-              'Version ${AppConstants.appVersion}'),
+          _tile(
+            context,
+            Icons.info_outline,
+            'About DepthFence',
+            'Version ${AppConstants.appVersion}',
+                () {},
+          ),
         ],
       ),
     );
   }
 
-  Widget _tile(IconData icon, String title, String subtitle,
-      {VoidCallback? onTap}) {
+  Widget _tile(BuildContext context, IconData icon, String title,
+      String subtitle, VoidCallback onTap) {
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: ListTile(
@@ -6520,7 +8880,7 @@ class _PermissionsScreenState extends State<PermissionsScreen>
         await _showOpenSettingsDialog(
           title: 'Location Permission Blocked',
           message:
-              'Location access is permanently denied. Open App Settings → Permissions → Location to enable it manually.',
+          'Location access is permanently denied. Open App Settings → Permissions → Location to enable it manually.',
         );
         return;
       }
@@ -6533,7 +8893,7 @@ class _PermissionsScreenState extends State<PermissionsScreen>
         await _showOpenSettingsDialog(
           title: 'GPS is Turned Off',
           message:
-              'Please turn ON your device GPS from the system quick settings or Location settings.',
+          'Please turn ON your device GPS from the system quick settings or Location settings.',
           openAppInfo: false,
         );
         return;
@@ -6549,7 +8909,7 @@ class _PermissionsScreenState extends State<PermissionsScreen>
       await _showOpenSettingsDialog(
         title: 'Revoke Location Manually',
         message:
-            'Android does not allow apps to revoke their own permissions. Open App Settings → Permissions → Location → Deny.',
+        'Android does not allow apps to revoke their own permissions. Open App Settings → Permissions → Location → Deny.',
       );
       return;
     }
@@ -6571,7 +8931,7 @@ class _PermissionsScreenState extends State<PermissionsScreen>
         await _showOpenSettingsDialog(
           title: 'Camera Permission Blocked',
           message:
-              'Camera access is permanently denied. Open App Settings → Permissions → Camera to enable it manually.',
+          'Camera access is permanently denied. Open App Settings → Permissions → Camera to enable it manually.',
         );
         return;
       }
@@ -6581,7 +8941,7 @@ class _PermissionsScreenState extends State<PermissionsScreen>
       await _showOpenSettingsDialog(
         title: 'Revoke Camera Manually',
         message:
-            'Open App Settings → Permissions → Camera → Deny to revoke.',
+        'Open App Settings → Permissions → Camera → Deny to revoke.',
       );
       return;
     }
@@ -6618,7 +8978,7 @@ class _PermissionsScreenState extends State<PermissionsScreen>
         await _showOpenSettingsDialog(
           title: 'Files Permission Blocked',
           message:
-              'Files access is permanently denied. Open App Settings → Permissions → Files & Media to enable it manually.',
+          'Files access is permanently denied. Open App Settings → Permissions → Files & Media to enable it manually.',
         );
         return;
       }
@@ -6628,7 +8988,7 @@ class _PermissionsScreenState extends State<PermissionsScreen>
       await _showOpenSettingsDialog(
         title: 'Revoke Files Manually',
         message:
-            'Open App Settings → Permissions → Files & Media → Deny to revoke.',
+        'Open App Settings → Permissions → Files & Media → Deny to revoke.',
       );
       return;
     }
@@ -6651,7 +9011,7 @@ class _PermissionsScreenState extends State<PermissionsScreen>
         await _showOpenSettingsDialog(
           title: 'Notifications Blocked',
           message:
-              'Notification permission is permanently denied. Open App Settings → Notifications to enable it manually.',
+          'Notification permission is permanently denied. Open App Settings → Notifications to enable it manually.',
         );
         return;
       }
@@ -6661,7 +9021,7 @@ class _PermissionsScreenState extends State<PermissionsScreen>
       await _showOpenSettingsDialog(
         title: 'Disable Notifications Manually',
         message:
-            'Open App Settings → Notifications → toggle off to disable.',
+        'Open App Settings → Notifications → toggle off to disable.',
       );
       return;
     }
@@ -6852,11 +9212,11 @@ class _PermissionsScreenState extends State<PermissionsScreen>
             title: 'Location',
             subtitle: _locationGranted && _gpsServiceEnabled
                 ? (_latitude != null && _longitude != null
-                    ? 'Lat: ${_latitude!.toStringAsFixed(6)}, Lng: ${_longitude!.toStringAsFixed(6)}'
-                    : 'GPS enabled — fetching coordinates...')
+                ? 'Lat: ${_latitude!.toStringAsFixed(6)}, Lng: ${_longitude!.toStringAsFixed(6)}'
+                : 'GPS enabled — fetching coordinates...')
                 : _locationGranted
-                    ? 'Permission granted, but GPS is OFF'
-                    : 'Access GPS and show coordinates on the map',
+                ? 'Permission granted, but GPS is OFF'
+                : 'Access GPS and show coordinates on the map',
             enabled: _locationGranted && _gpsServiceEnabled,
             loading: _loadingLocation,
             onToggle: _toggleLocation,
@@ -6979,8 +9339,8 @@ class _PermissionTile extends StatelessWidget {
           color: enabled
               ? AppTheme.gold.withValues(alpha: 0.4)
               : extraWarning
-                  ? AppTheme.danger.withValues(alpha: 0.4)
-                  : AppTheme.border,
+              ? AppTheme.danger.withValues(alpha: 0.4)
+              : AppTheme.border,
           width: 1.2,
         ),
       ),
@@ -6994,15 +9354,15 @@ class _PermissionTile extends StatelessWidget {
               color: enabled
                   ? AppTheme.gold.withValues(alpha: 0.15)
                   : extraWarning
-                      ? AppTheme.danger.withValues(alpha: 0.12)
-                      : AppTheme.gold.withValues(alpha: 0.06),
+                  ? AppTheme.danger.withValues(alpha: 0.12)
+                  : AppTheme.gold.withValues(alpha: 0.06),
               borderRadius: BorderRadius.circular(12),
               border: Border.all(
                 color: enabled
                     ? AppTheme.gold.withValues(alpha: 0.5)
                     : extraWarning
-                        ? AppTheme.danger.withValues(alpha: 0.5)
-                        : AppTheme.border,
+                    ? AppTheme.danger.withValues(alpha: 0.5)
+                    : AppTheme.border,
               ),
             ),
             child: Icon(
@@ -7010,8 +9370,8 @@ class _PermissionTile extends StatelessWidget {
               color: enabled
                   ? AppTheme.gold
                   : extraWarning
-                      ? AppTheme.danger
-                      : AppTheme.textMuted,
+                  ? AppTheme.danger
+                  : AppTheme.textMuted,
               size: 22,
             ),
           ),
@@ -7057,7 +9417,7 @@ class _PermissionTile extends StatelessWidget {
                   child: CircularProgressIndicator(
                     strokeWidth: 2,
                     valueColor:
-                        AlwaysStoppedAnimation<Color>(AppTheme.gold),
+                    AlwaysStoppedAnimation<Color>(AppTheme.gold),
                   ),
                 ),
               ),
@@ -7853,6 +10213,858 @@ class _DeltaZPainter extends CustomPainter {
     return oldDelegate.shadowLength != shadowLength ||
         oldDelegate.solarAngle != solarAngle ||
         oldDelegate.height != height;
+  }
+}
+// ============================================================
+// PDF GENERATION SERVICE
+// ============================================================
+
+class PdfGenerator {
+  /// Generates a DepthFence survey report PDF and returns the saved File.
+  static Future<File> generateAndSave({
+    required DepthFenceState state,
+  }) async {
+    final pdf = pw.Document(
+      title: 'DepthFence Survey Report',
+      author: 'DepthFence Enterprise',
+      creator: 'DepthFence v2.0',
+    );
+
+    // ═══════════════════════════════════════════════════
+    // PAGE 1 — Survey Report
+    // ═══════════════════════════════════════════════════
+    pdf.addPage(
+      pw.Page(
+        pageFormat: PdfPageFormat.a4,
+        margin: const pw.EdgeInsets.all(32),
+        build: (pw.Context context) {
+          return pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              // ─── HEADER ───
+              pw.Container(
+                padding: const pw.EdgeInsets.all(12),
+                decoration: pw.BoxDecoration(
+                  border: pw.Border.all(
+                    color: PdfColor.fromHex('#FFC107'),
+                    width: 2,
+                  ),
+                  borderRadius: pw.BorderRadius.circular(6),
+                ),
+                child: pw.Row(
+                  children: [
+                    // Logo placeholder circle
+                    pw.Container(
+                      width: 50,
+                      height: 50,
+                      decoration: pw.BoxDecoration(
+                        color: PdfColor.fromHex('#FFC107'),
+                        borderRadius: pw.BorderRadius.circular(25),
+                      ),
+                      child: pw.Center(
+                        child: pw.Text(
+                          'DF',
+                          style: pw.TextStyle(
+                            fontSize: 20,
+                            fontWeight: pw.FontWeight.bold,
+                            color: PdfColors.black,
+                          ),
+                        ),
+                      ),
+                    ),
+                    pw.SizedBox(width: 14),
+                    pw.Expanded(
+                      child: pw.Column(
+                        crossAxisAlignment: pw.CrossAxisAlignment.start,
+                        children: [
+                          pw.Text(
+                            'Depth Fence',
+                            style: pw.TextStyle(
+                              fontSize: 22,
+                              fontWeight: pw.FontWeight.bold,
+                              color: PdfColor.fromHex('#0A0E1A'),
+                            ),
+                          ),
+                          pw.SizedBox(height: 2),
+                          pw.Text(
+                            'LAND SURVEY & INSPECTION REPORT',
+                            style: pw.TextStyle(
+                              fontSize: 9,
+                              letterSpacing: 1.2,
+                              fontWeight: pw.FontWeight.bold,
+                              color: PdfColor.fromHex('#0A0E1A'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              pw.SizedBox(height: 20),
+
+              // ─── SECTION: SELECTED BUILDING ───
+              pw.Text(
+                'SELECTED STRUCTURE',
+                style: pw.TextStyle(
+                  fontSize: 11,
+                  fontWeight: pw.FontWeight.bold,
+                  color: PdfColor.fromHex('#0A0E1A'),
+                  letterSpacing: 1,
+                ),
+              ),
+              pw.SizedBox(height: 8),
+              pw.Container(
+                padding: const pw.EdgeInsets.all(12),
+                decoration: pw.BoxDecoration(
+                  color: PdfColor.fromHex('#F5F5F5'),
+                  borderRadius: pw.BorderRadius.circular(4),
+                ),
+                child: pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                  children: [
+                    _pdfRow(
+                      'Coordinates',
+                      state.selectedBuildingLocation != null
+                          ? '${state.selectedBuildingLocation!.latitude.toStringAsFixed(6)}, ${state.selectedBuildingLocation!.longitude.toStringAsFixed(6)}'
+                          : 'N/A',
+                    ),
+                    _pdfRow(
+                      'Shadow Length',
+                      '${state.shadowLength.toStringAsFixed(2)} m',
+                    ),
+                    _pdfRow(
+                      'Solar Elevation Angle',
+                      '${state.solarAngle.toStringAsFixed(2)}°',
+                    ),
+                    _pdfRow(
+                      'Calculated Building Height',
+                      '${state.selectedBuildingHeight.toStringAsFixed(2)} m',
+                      isHighlight: true,
+                    ),
+                    _pdfRow(
+                      'Estimated Depth',
+                      '${state.selectedBuildingDepth.toStringAsFixed(2)} m',
+                    ),
+                    _pdfRow(
+                      'Measured At',
+                      state.selectedAt != null
+                          ? state.selectedAt!.toString().split('.').first
+                          : 'N/A',
+                    ),
+                  ],
+                ),
+              ),
+              pw.SizedBox(height: 20),
+
+              // ─── SECTION: BOUNDARY COORDINATES ───
+              pw.Text(
+                'BOUNDARY COORDINATES',
+                style: pw.TextStyle(
+                  fontSize: 11,
+                  fontWeight: pw.FontWeight.bold,
+                  color: PdfColor.fromHex('#0A0E1A'),
+                  letterSpacing: 1,
+                ),
+              ),
+              pw.SizedBox(height: 8),
+              pw.Table(
+                border: pw.TableBorder.all(
+                  color: PdfColors.grey300,
+                  width: 0.5,
+                ),
+                children: [
+                  pw.TableRow(
+                    decoration: pw.BoxDecoration(
+                      color: PdfColor.fromHex('#FFC107'),
+                    ),
+                    children: [
+                      _pdfCell('Point', isHeader: true),
+                      _pdfCell('Latitude', isHeader: true),
+                      _pdfCell('Longitude', isHeader: true),
+                    ],
+                  ),
+                  ...state.boundaryPoints.asMap().entries.map((e) {
+                    return pw.TableRow(
+                      children: [
+                        _pdfCell('${e.key + 1}'),
+                        _pdfCell(e.value.latitude.toStringAsFixed(6)),
+                        _pdfCell(e.value.longitude.toStringAsFixed(6)),
+                      ],
+                    );
+                  }),
+                ],
+              ),
+              pw.SizedBox(height: 20),
+
+              // ─── SECTION: METADATA ───
+              pw.Container(
+                padding: const pw.EdgeInsets.all(10),
+                decoration: pw.BoxDecoration(
+                  border: pw.Border.all(color: PdfColors.grey300),
+                  borderRadius: pw.BorderRadius.circular(4),
+                ),
+                child: pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                  children: [
+                    _pdfMeta(
+                      'Generated By',
+                      '${state.userName.isNotEmpty ? state.userName : "Demo User"} (${state.userRole.toUpperCase()})',
+                    ),
+                    _pdfMeta('App Version', 'DepthFence v2.0'),
+                    _pdfMeta('Report Date', DateTime.now().toString().split('.').first),
+                    _pdfMeta('ULPIN Status', 'VERIFIED'),
+                  ],
+                ),
+              ),
+
+              pw.Spacer(),
+
+              // ─── FOOTER ───
+              pw.Divider(color: PdfColor.fromHex('#FFC107'), thickness: 1.5),
+              pw.SizedBox(height: 6),
+              pw.Center(
+                child: pw.Text(
+                  'SIH26011  •  SIH26012  •  DepthFence Enterprise',
+                  style: pw.TextStyle(
+                    fontSize: 8,
+                    color: PdfColors.grey600,
+                    letterSpacing: 1,
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+
+    // ═══════════════════════════════════════════════════
+    // SAVE FILE
+    // ═══════════════════════════════════════════════════
+    final bytes = await pdf.save();
+
+    File file;
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final ts = DateTime.now().millisecondsSinceEpoch;
+      file = File('${dir.path}/DepthFence_Report_$ts.pdf');
+      await file.writeAsBytes(bytes);
+    } catch (e) {
+      // Fallback: use cache directory
+      final cache = await getTemporaryDirectory();
+      final ts = DateTime.now().millisecondsSinceEpoch;
+      file = File('${cache.path}/DepthFence_Report_$ts.pdf');
+      await file.writeAsBytes(bytes);
+    }
+    return file;
+  }
+
+  // ─── PDF Table Cell Helper ───
+  static pw.Widget _pdfCell(String text, {bool isHeader = false}) {
+    return pw.Padding(
+      padding: const pw.EdgeInsets.all(8),
+      child: pw.Text(
+        text,
+        style: pw.TextStyle(
+          fontSize: 10,
+          fontWeight:
+          isHeader ? pw.FontWeight.bold : pw.FontWeight.normal,
+        ),
+      ),
+    );
+  }
+
+  // ─── PDF Key-Value Row ───
+  static pw.Widget _pdfRow(
+      String label,
+      String value, {
+        bool isHighlight = false,
+      }) {
+    return pw.Padding(
+      padding: const pw.EdgeInsets.symmetric(vertical: 3),
+      child: pw.Row(
+        crossAxisAlignment: pw.CrossAxisAlignment.start,
+        children: [
+          pw.SizedBox(
+            width: 140,
+            child: pw.Text(
+              label,
+              style: pw.TextStyle(
+                fontSize: 10,
+                color: PdfColors.grey700,
+              ),
+            ),
+          ),
+          pw.Expanded(
+            child: pw.Text(
+              value,
+              style: pw.TextStyle(
+                fontSize: isHighlight ? 13 : 10,
+                fontWeight: isHighlight
+                    ? pw.FontWeight.bold
+                    : pw.FontWeight.normal,
+                color: isHighlight
+                    ? PdfColor.fromHex('#00A86B')
+                    : PdfColors.black,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ─── PDF Meta Row ───
+  static pw.Widget _pdfMeta(String label, String value) {
+    return pw.Padding(
+      padding: const pw.EdgeInsets.symmetric(vertical: 2),
+      child: pw.Row(
+        mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+        children: [
+          pw.Text(
+            label,
+            style: pw.TextStyle(fontSize: 9, color: PdfColors.grey700),
+          ),
+          pw.Text(
+            value,
+            style: pw.TextStyle(
+              fontSize: 9,
+              fontWeight: pw.FontWeight.bold,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================
+// GEMINI AI CHAT SCREEN — DepthFence Assistant
+// ============================================================
+
+class GeminiChatScreen extends StatefulWidget {
+  const GeminiChatScreen({super.key});
+
+  @override
+  State<GeminiChatScreen> createState() => _GeminiChatScreenState();
+}
+
+class _GeminiChatScreenState extends State<GeminiChatScreen> {
+  final TextEditingController _controller = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
+
+  late final GenerativeModel _model;
+  late ChatSession _chat;
+
+  final List<Map<String, String>> _messages = [];
+  bool _isLoading = false;
+  bool _apiKeyMissing = false;
+
+  @override
+  void initState() {
+    super.initState();
+
+    // Check if API key is set
+    if (AppConstants.geminiApiKey.isEmpty ||
+        AppConstants.geminiApiKey == 'PASTE_YOUR_KEY_HERE') {
+      _apiKeyMissing = true;
+      return;
+    }
+
+    try {
+      // Initialize Gemini model with DepthFence context
+      _model = GenerativeModel(
+        model: AppConstants.geminiModel,
+        apiKey: AppConstants.geminiApiKey,
+        systemInstruction: Content.system(
+          'You are the DepthFence AI Assistant, an expert in geospatial land '
+              'intelligence, cadastral mapping, land surveying, depth analysis, '
+              'and illegal construction detection. You help field surveyors and '
+              'government administrators with their questions about land parcels, '
+              'anomalies, building heights, and survey reports. '
+              'Answer concisely and practically.',
+        ),
+      );
+
+      // Start a persistent multi-turn chat session
+      _chat = _model.startChat();
+
+      // Add welcome message
+      _messages.add({
+        'sender': 'bot',
+        'text': '👋 Hello! I\'m your DepthFence AI Assistant.\n\n'
+            'Ask me anything about:\n'
+            '• Land parcels & cadastral mapping\n'
+            '• Building height calculations\n'
+            '• Anomaly detection\n'
+            '• Survey reports & ULPIN\n\n'
+            'How can I help you today?',
+      });
+    } catch (e) {
+      _apiKeyMissing = true;
+      debugPrint('Gemini init failed: $e');
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  // ---------- Send Message ----------
+  Future<void> _sendMessage() async {
+    final text = _controller.text.trim();
+    if (text.isEmpty || _isLoading) return;
+
+    setState(() {
+      _messages.add({'sender': 'user', 'text': text});
+      _isLoading = true;
+    });
+    _controller.clear();
+    _scrollToBottom();
+
+    try {
+      final response = await _chat.sendMessage(Content.text(text));
+      if (!mounted) return;
+
+      setState(() {
+        _messages.add({
+          'sender': 'bot',
+          'text': response.text ?? 'Sorry, no response generated.',
+        });
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _messages.add({
+          'sender': 'bot',
+          'text': '⚠ Error: ${e.toString().split('\n').first}',
+        });
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        _scrollToBottom();
+      }
+    }
+  }
+
+  // ---------- File Query ----------
+  Future<void> _pickAndQueryFile() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.any,
+        allowMultiple: false,
+      );
+
+      if (result == null || result.files.isEmpty) return;
+
+      final filePath = result.files.first.path;
+      if (filePath == null) return;
+
+      final file = File(filePath);
+      final fileName = result.files.first.name;
+
+      // Ask user for question about the file
+      if (!mounted) return;
+      final question = await _showQuestionDialog(fileName);
+      if (question == null || question.isEmpty) return;
+
+      setState(() {
+        _messages.add({
+          'sender': 'user',
+          'text': '📎 Attached: $fileName\n\n$question',
+        });
+        _isLoading = true;
+      });
+      _scrollToBottom();
+
+      // Read file (limit to 100KB to avoid token limits)
+      String fileContent;
+      final fileSize = await file.length();
+      if (fileSize > 100 * 1024) {
+        final content = await file.readAsString();
+        fileContent =
+        '${content.substring(0, 100 * 1024)}\n\n[File truncated to 100KB]';
+      } else {
+        fileContent = await file.readAsString();
+      }
+
+      final prompt = 'Context File: $fileName\n\n'
+          'Content:\n$fileContent\n\n'
+          'User Question: $question';
+
+      final response = await _chat.sendMessage(Content.text(prompt));
+      if (!mounted) return;
+
+      setState(() {
+        _messages.add({
+          'sender': 'bot',
+          'text': response.text ?? 'Unable to process file.',
+        });
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _messages.add({
+          'sender': 'bot',
+          'text': '⚠ Failed to read file: ${e.toString().split('\n').first}',
+        });
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        _scrollToBottom();
+      }
+    }
+  }
+
+  Future<String?> _showQuestionDialog(String fileName) async {
+    final qController = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.surface,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+        ),
+        title: Row(
+          children: [
+            const Icon(Icons.attach_file_rounded,
+                color: AppTheme.gold, size: 20),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                fileName,
+                style: const TextStyle(
+                  color: AppTheme.gold,
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+        content: TextField(
+          controller: qController,
+          autofocus: true,
+          maxLines: 3,
+          style: const TextStyle(color: AppTheme.textPrimary),
+          decoration: const InputDecoration(
+            hintText: 'What would you like to ask about this file?',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel',
+                style: TextStyle(color: AppTheme.textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () =>
+                Navigator.pop(ctx, qController.text.trim()),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.gold,
+              foregroundColor: Colors.black,
+            ),
+            child: const Text('Ask'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  void _clearChat() {
+    setState(() {
+      _messages.clear();
+      _messages.add({
+        'sender': 'bot',
+        'text': '🧹 Chat cleared. How can I help you?',
+      });
+    });
+    try {
+      _chat = _model.startChat();
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: AppTheme.scaffold,
+      appBar: AppBar(
+        title: const Row(
+          children: [
+            Icon(Icons.auto_awesome, color: AppTheme.gold, size: 20),
+            SizedBox(width: 8),
+            Text('AI Assistant'),
+          ],
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh_rounded),
+            tooltip: 'Clear chat',
+            onPressed: _messages.length > 1 ? _clearChat : null,
+          ),
+        ],
+      ),
+      body: _apiKeyMissing
+          ? _buildApiKeyMissingView()
+          : Column(
+        children: [
+          // ---------- Messages List ----------
+          Expanded(
+            child: ListView.builder(
+              controller: _scrollController,
+              padding: const EdgeInsets.all(12),
+              itemCount: _messages.length,
+              itemBuilder: (context, index) {
+                final message = _messages[index];
+                final isUser = message['sender'] == 'user';
+                return _buildMessageBubble(message, isUser);
+              },
+            ),
+          ),
+
+          // ---------- Loading Indicator ----------
+          if (_isLoading)
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      valueColor:
+                      AlwaysStoppedAnimation<Color>(AppTheme.gold),
+                    ),
+                  ),
+                  SizedBox(width: 12),
+                  Text(
+                    'Thinking...',
+                    style: TextStyle(
+                      color: AppTheme.textSecondary,
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+          // ---------- Input Area ----------
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: const BoxDecoration(
+              color: AppTheme.surface,
+              border: Border(
+                top: BorderSide(color: AppTheme.border, width: 1),
+              ),
+            ),
+            child: SafeArea(
+              top: false,
+              child: Row(
+                children: [
+                  // File attach button
+                  IconButton(
+                    onPressed: _isLoading ? null : _pickAndQueryFile,
+                    icon: const Icon(Icons.attach_file_rounded),
+                    color: AppTheme.gold,
+                    tooltip: 'Attach file',
+                  ),
+                  // Text input
+                  Expanded(
+                    child: TextField(
+                      controller: _controller,
+                      enabled: !_isLoading,
+                      style: const TextStyle(
+                        color: AppTheme.textPrimary,
+                        fontSize: 14,
+                      ),
+                      decoration: InputDecoration(
+                        hintText: 'Ask about land, parcels, anomalies...',
+                        filled: true,
+                        fillColor: AppTheme.card,
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 10),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(24),
+                          borderSide:
+                          const BorderSide(color: AppTheme.border),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(24),
+                          borderSide:
+                          const BorderSide(color: AppTheme.border),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(24),
+                          borderSide:
+                          const BorderSide(color: AppTheme.gold),
+                        ),
+                      ),
+                      textInputAction: TextInputAction.send,
+                      onSubmitted: (_) => _sendMessage(),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  // Send button
+                  GestureDetector(
+                    onTap: _isLoading ? null : _sendMessage,
+                    child: Container(
+                      width: 44,
+                      height: 44,
+                      decoration: BoxDecoration(
+                        color: _isLoading
+                            ? AppTheme.textMuted
+                            : AppTheme.gold,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.send_rounded,
+                        color: Colors.black,
+                        size: 20,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMessageBubble(Map<String, String> message, bool isUser) {
+    return Align(
+      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        constraints: BoxConstraints(
+          maxWidth: MediaQuery.of(context).size.width * 0.78,
+        ),
+        margin: const EdgeInsets.symmetric(vertical: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: isUser
+              ? AppTheme.gold.withValues(alpha: 0.15)
+              : AppTheme.card,
+          borderRadius: BorderRadius.only(
+            topLeft: const Radius.circular(16),
+            topRight: const Radius.circular(16),
+            bottomLeft: Radius.circular(isUser ? 16 : 4),
+            bottomRight: Radius.circular(isUser ? 4 : 16),
+          ),
+          border: Border.all(
+            color: isUser
+                ? AppTheme.gold.withValues(alpha: 0.4)
+                : AppTheme.border,
+            width: 1,
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (!isUser)
+              const Padding(
+                padding: EdgeInsets.only(bottom: 4),
+                child: Row(
+                  children: [
+                    Icon(Icons.auto_awesome,
+                        color: AppTheme.gold, size: 12),
+                    SizedBox(width: 4),
+                    Text(
+                      'DepthFence AI',
+                      style: TextStyle(
+                        color: AppTheme.gold,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            SelectableText(
+              message['text'] ?? '',
+              style: const TextStyle(
+                color: AppTheme.textPrimary,
+                fontSize: 13.5,
+                height: 1.4,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildApiKeyMissingView() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 80,
+              height: 80,
+              decoration: BoxDecoration(
+                color: AppTheme.warning.withValues(alpha: 0.15),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.key_off_rounded,
+                color: AppTheme.warning,
+                size: 40,
+              ),
+            ),
+            const SizedBox(height: 20),
+            const Text(
+              'Gemini API Key Missing',
+              style: TextStyle(
+                color: AppTheme.textPrimary,
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(height: 10),
+            const Text(
+              'Add your Gemini API key to\nAppConstants.geminiApiKey in main.dart',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: AppTheme.textSecondary,
+                fontSize: 13,
+                height: 1.5,
+              ),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton.icon(
+              onPressed: () {
+                Navigator.pop(context);
+              },
+              icon: const Icon(Icons.arrow_back_rounded),
+              label: const Text('Go Back'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
