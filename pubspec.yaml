@@ -1,7 +1,7 @@
 name: depthfenc
-description: "DepthFence — Geospatial Land Intelligence Platform"
+description: "DepthFence — Geospatial Land Intelligence Platform (SIH26011 & SIH26012)"
 publish_to: 'none'
-version: 2.0.0+1
+version: 2.0.0+2
 
 environment:
   sdk: ^3.12.2
@@ -9,22 +9,40 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+
+  # State
   provider: ^6.1.5
+
+  # Backend
   supabase_flutter: ^2.17.2
+
+  # Maps
   flutter_map: ^6.2.1
   latlong2: ^0.9.1
-  shared_preferences: ^2.3.2
-  permission_handler: ^11.4.0
+
+  # Location
   geolocator: ^13.0.4
-  image_picker: ^1.1.2
-  file_picker: ^8.1.2
-  http: ^1.2.2
-  fl_chart: ^0.69.0
+  permission_handler: ^11.4.0
+
+  # Local storage
+  shared_preferences: ^2.3.2
+  path_provider: ^2.1.5
+
+  # Camera
   camera: ^0.11.0+2
+
+  # Reporting
   pdf: ^3.11.1
   printing: ^5.13.4
-  path_provider: ^2.1.5
-  google_generative_ai: ^0.4.7
+
+  # Charts
+  fl_chart: ^0.69.0
+
+  # Networking
+  http: ^1.2.2
+
+  # Share sheet (used by SurveyReportPngScreen)
+  share_plus: ^10.0.2
 
 dev_dependencies:
   flutter_test:
@@ -33,5 +51,6 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+
   assets:
     - assets/images/

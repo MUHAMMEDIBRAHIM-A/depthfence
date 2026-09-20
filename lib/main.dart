@@ -1,6 +1,8 @@
 import 'dart:ui' as ui;
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -67,7 +69,7 @@ class AppConstants {
     'GEMINI_API_KEY',
     defaultValue: '',
   );
-  static const String geminiModel = 'gemini-2.5-flash';
+  static const String geminiModel = 'gemini-3.6-flash';
 }
 
 
@@ -193,6 +195,53 @@ class AppTheme {
 }
 
 // ============================================================
+// SURVEY GEOMETRY
+// ============================================================
+
+class SurveyGeometry {
+  static const Distance _d = Distance();
+
+  static double meters(LatLng a, LatLng b) => _d(a, b);
+
+  static String format(double m) {
+    if (m >= 1000) return '${(m / 1000).toStringAsFixed(2)} km';
+    return '${m.toStringAsFixed(2)} m';
+  }
+
+  static List<double> sidesOf(List<LatLng> c) {
+    if (c.length < 2) return [];
+    final out = <double>[];
+    for (int i = 0; i < c.length; i++) {
+      out.add(meters(c[i], c[(i + 1) % c.length]));
+    }
+    return out;
+  }
+
+  static double perimeter(List<LatLng> c) =>
+      sidesOf(c).fold(0.0, (a, b) => a + b);
+
+  static double areaM2(List<LatLng> c) {
+    if (c.length < 3) return 0;
+    const mPerDegLat = 111320.0;
+    final origin = c.first;
+    final mPerDegLng =
+        111320.0 * math.cos(origin.latitude * math.pi / 180);
+    final pts = c
+        .map((p) => [
+              (p.longitude - origin.longitude) * mPerDegLng,
+              (p.latitude - origin.latitude) * mPerDegLat,
+            ])
+        .toList();
+    double a = 0;
+    for (int i = 0; i < pts.length; i++) {
+      final j = (i + 1) % pts.length;
+      a += pts[i][0] * pts[j][1] - pts[j][0] * pts[i][1];
+    }
+    return a.abs() / 2;
+  }
+}
+
+// ============================================================
 // MODELS
 // ============================================================
 
@@ -311,6 +360,179 @@ class LandParcel {
 // ============================================================
 
 class DepthFenceState extends ChangeNotifier {
+  // ============================================================
+  // PROJECT STATE — the single source of truth for all screens
+  // ============================================================
+
+  String? _activeProjectId;
+  String _activeProjectName = 'Untitled Survey';
+
+  List<LatLng> _boundaryNodes = [];
+
+  String _routeColorMode = 'verified'; // 'problem' | 'verified' | 'inspection' | 'none'
+  final Map<String, String> _routeColors = {};
+  final Map<String, LatLng> _routeSpots = {};
+
+  // ---------- Segment Statuses (per boundary line) ----------
+  final Map<int, String> _segmentStatuses = {};
+  Map<int, String> get segmentStatuses => Map.unmodifiable(_segmentStatuses);
+
+  static const String _segmentKey = 'depthfence_segment_statuses';
+
+  final List<SavedProject> _savedProjects = [];
+
+  LatLng? _incomingLocation;
+
+  // ---------- Getters ----------
+  String? get activeProjectId => _activeProjectId;
+  String get activeProjectName => _activeProjectName;
+  List<LatLng> get boundaryNodes => List.unmodifiable(_boundaryNodes);
+  String get routeColorMode => _routeColorMode;
+  Map<String, String> get routeColors => Map.unmodifiable(_routeColors);
+  Map<String, LatLng> get routeSpots => Map.unmodifiable(_routeSpots);
+  List<SavedProject> get savedProjects => List.unmodifiable(_savedProjects);
+  LatLng? get incomingLocation => _incomingLocation;
+
+  bool get hasBoundary => _boundaryNodes.length >= 3;
+  bool get hasSelectedBuilding => _selectedBuildingLocation != null;
+
+  // ---------- Setters ----------
+  void setIncomingLocation(LatLng? loc) {
+    _incomingLocation = loc;
+    _selectedBuildingLocation = loc;
+    _selectedAt = DateTime.now();
+    notifyListeners();
+  }
+
+  void setBoundaryNodes(List<LatLng> nodes) {
+    _boundaryNodes = List.of(nodes);
+    notifyListeners();
+  }
+
+  void updateBoundaryNode(int index, LatLng node) {
+    if (index < 0 || index >= _boundaryNodes.length) return;
+    _boundaryNodes[index] = node;
+    notifyListeners();
+  }
+
+  void setRouteColorMode(String mode) {
+    _routeColorMode = mode;
+    notifyListeners();
+  }
+
+  void setRouteColor(String routeId, String color) {
+    _routeColors[routeId] = color;
+    notifyListeners();
+    _persistRouteColors();
+  }
+
+  void tagSpot(LatLng point, String color) {
+    final id = 'spot_${DateTime.now().millisecondsSinceEpoch}';
+    _routeColors[id] = color;
+    _routeSpots[id] = point;
+    notifyListeners();
+    _persistRouteColors();
+  }
+
+  void removeSpot(String id) {
+    _routeColors.remove(id);
+    _routeSpots.remove(id);
+    notifyListeners();
+    _persistRouteColors();
+  }
+
+  void clearAllSpots() {
+    _routeColors.clear();
+    _routeSpots.clear();
+    notifyListeners();
+    _persistRouteColors();
+  }
+
+  void setSegmentStatus(int index, String status) {
+    _segmentStatuses[index] = status;
+    notifyListeners();
+    _persistSegmentStatuses();
+  }
+
+  void clearSegmentStatuses() {
+    _segmentStatuses.clear();
+    notifyListeners();
+    _persistSegmentStatuses();
+  }
+
+  /// Returns hex like '22C55E' for the given segment index.
+  String segmentColorHex(int index) {
+    switch (_segmentStatuses[index] ?? 'normal') {
+      case 'verified':   return '22C55E';
+      case 'problem':    return 'EF4444';
+      case 'inspection': return 'F59E0B';
+      default:           return '6B7280';
+    }
+  }
+
+  String segmentStatusLabel(int index) {
+    switch (_segmentStatuses[index] ?? 'normal') {
+      case 'verified':   return 'Verified';
+      case 'problem':    return 'Problem';
+      case 'inspection': return 'Inspection';
+      default:           return 'Normal';
+    }
+  }
+
+  Future<void> _persistSegmentStatuses() async {
+    await _prefs?.setString(_segmentKey, jsonEncode(_segmentStatuses));
+  }
+
+  Future<void> _loadSegmentStatuses() async {
+    final raw = _prefs?.getString(_segmentKey);
+    if (raw == null) return;
+    final decoded = jsonDecode(raw) as Map<String, dynamic>;
+    _segmentStatuses
+      ..clear()
+      ..addAll(decoded.map((k, v) => MapEntry(int.parse(k), v.toString())));
+  }
+
+  Future<void> saveCurrentAsProject(String name) async {
+    final project = SavedProject(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      name: name,
+      selectedBuilding: _selectedBuildingLocation,
+      boundary: List.of(_boundaryNodes),
+      savedAt: DateTime.now(),
+      buildingHeight: _selectedBuildingHeight,
+      deltaZ: _deltaZ,
+    );
+    _savedProjects.insert(0, project);
+    await _persistProjects();
+    notifyListeners();
+  }
+
+  Future<void> _persistProjects() async {
+    await _prefs?.setStringList(
+      _projectsKey,
+      _savedProjects.map((p) => jsonEncode(p.toJson())).toList(),
+    );
+  }
+
+  Future<void> loadProject(SavedProject project) async {
+    _activeProjectId = project.id;
+    _activeProjectName = project.name;
+    _selectedBuildingLocation = project.selectedBuilding;
+    _boundaryNodes = List.of(project.boundary);
+    _selectedBuildingHeight = project.buildingHeight ?? 0;
+    _deltaZ = project.deltaZ ?? _deltaZ;
+    _selectedAt = DateTime.now();
+    _autoCalculated = project.selectedBuilding != null;
+    notifyListeners();
+    await saveActiveProject();
+  }
+
+  Future<void> deleteProject(String id) async {
+    _savedProjects.removeWhere((p) => p.id == id);
+    await _persistProjects();
+    notifyListeners();
+  }
+
   // ---------- Runtime Gemini API Key ----------
   static const String _geminiKeyPref = 'depthfence_gemini_key';
   String _runtimeGeminiKey = '';
@@ -440,7 +662,10 @@ class DepthFenceState extends ChangeNotifier {
   double get solarAngle => _solarAngle;                           // ADD
   double get horizontalDistanceAB => _horizontalDistanceAB;       // ADD
   double get deltaZ => _deltaZ;                                   // ADD
-  List<LatLng> get boundaryPoints => List.unmodifiable(_boundaryPoints); // ADD
+  List<LatLng> get boundaryPoints {
+    final source = _boundaryNodes.isNotEmpty ? _boundaryNodes : _boundaryPoints;
+    return List.unmodifiable(source);
+  }
   LatLng? get selectedBuildingLocation => _selectedBuildingLocation;
   double get selectedBuildingHeight => _selectedBuildingHeight;
   double get selectedBuildingDepth => _selectedBuildingDepth;
@@ -463,8 +688,52 @@ class DepthFenceState extends ChangeNotifier {
     notifyListeners();
   }
 
+  void updateAnomalyStatus(String id, String status) {
+    final idx = _anomalies.indexWhere((a) => a.id == id);
+    if (idx != -1) {
+      final old = _anomalies[idx];
+      _anomalies[idx] = Anomaly(
+        id: old.id,
+        title: old.title,
+        description: old.description,
+        parcelId: old.parcelId,
+        severity: old.severity,
+        status: status,
+        location: old.location,
+        detectedAt: old.detectedAt,
+      );
+      notifyListeners();
+    }
+  }
+
+  void deleteAnomaly(String id) {
+    _anomalies.removeWhere((a) => a.id == id);
+    notifyListeners();
+  }
+
   void addLandParcel(LandParcel parcel) {
     _parcels.insert(0, parcel);
+    notifyListeners();
+  }
+
+  void updateLandParcelStatus(String id, String status) {
+    final idx = _parcels.indexWhere((p) => p.id == id);
+    if (idx != -1) {
+      final old = _parcels[idx];
+      _parcels[idx] = LandParcel(
+        id: old.id,
+        ulpin: old.ulpin,
+        ownerName: old.ownerName,
+        areaHa: old.areaHa,
+        center: old.center,
+        status: status,
+      );
+      notifyListeners();
+    }
+  }
+
+  void deleteLandParcel(String id) {
+    _parcels.removeWhere((p) => p.id == id);
     notifyListeners();
   }
 
@@ -563,6 +832,8 @@ class DepthFenceState extends ChangeNotifier {
     await _restoreSession();
     await _loadRegisteredUsers();
     await _loadGeminiKey();
+    await loadActiveProject();
+    await _loadSegmentStatuses();
 
     // ⭐ Listen for Supabase auth state changes
     Supabase.instance.client.auth.onAuthStateChange.listen((data) {
@@ -588,6 +859,125 @@ class DepthFenceState extends ChangeNotifier {
       _userName = p.getString(AppConstants.userNameKey) ?? '';
       notifyListeners();
     }
+  }
+
+  static const String _projectKey = 'depthfence_active_project';
+  static const String _boundaryKey = 'depthfence_boundary';
+  static const String _routeColorsKey = 'depthfence_route_colors';
+  static const String _routeSpotsKey = 'depthfence_route_spots';
+  static const String _projectsKey = 'depthfence_projects';
+
+  Future<void> saveActiveProject() async {
+    final p = _prefs;
+    if (p == null) return;
+
+    final boundaryJson = _boundaryNodes
+        .map((n) => jsonEncode({'lat': n.latitude, 'lng': n.longitude}))
+        .toList();
+    await p.setStringList(_boundaryKey, boundaryJson);
+
+    await p.setString(_routeColorsKey, jsonEncode(_routeColors));
+    await p.setString(_routeSpotsKey, jsonEncode(_routeSpots.map(
+      (k, v) => MapEntry(k, {'lat': v.latitude, 'lng': v.longitude}),
+    )));
+
+    final sel = _selectedBuildingLocation;
+    if (sel != null) {
+      await p.setString(
+        _projectKey,
+        jsonEncode({
+          'name': _activeProjectName,
+          'selectedLat': sel.latitude,
+          'selectedLng': sel.longitude,
+          'savedAt': DateTime.now().toIso8601String(),
+        }),
+      );
+    }
+  }
+
+  Future<void> loadActiveProject() async {
+    final p = _prefs;
+    if (p == null) return;
+
+    final rawBoundary = p.getStringList(_boundaryKey) ?? [];
+    _boundaryNodes = rawBoundary.map((s) {
+      final m = jsonDecode(s) as Map<String, dynamic>;
+      return LatLng(
+        (m['lat'] as num).toDouble(),
+        (m['lng'] as num).toDouble(),
+      );
+    }).toList();
+
+    final rawColors = p.getString(_routeColorsKey);
+    if (rawColors != null) {
+      final decoded = jsonDecode(rawColors) as Map<String, dynamic>;
+      _routeColors
+        ..clear()
+        ..addAll(decoded.map((k, v) => MapEntry(k, v.toString())));
+    }
+
+    final rawSpots = p.getString(_routeSpotsKey);
+    if (rawSpots != null) {
+      final decoded = jsonDecode(rawSpots) as Map<String, dynamic>;
+      _routeSpots
+        ..clear()
+        ..addAll(decoded.map((k, v) {
+          final m = v as Map<String, dynamic>;
+          return MapEntry(k, LatLng(
+            (m['lat'] as num).toDouble(),
+            (m['lng'] as num).toDouble(),
+          ));
+        }));
+    }
+
+    final rawProject = p.getString(_projectKey);
+    if (rawProject != null) {
+      final m = jsonDecode(rawProject) as Map<String, dynamic>;
+      _activeProjectName = (m['name'] ?? 'Untitled Survey') as String;
+      final lat = (m['selectedLat'] as num?)?.toDouble();
+      final lng = (m['selectedLng'] as num?)?.toDouble();
+      if (lat != null && lng != null) {
+        _selectedBuildingLocation = LatLng(lat, lng);
+      }
+    }
+
+    final rawProjects = p.getStringList(_projectsKey) ?? [];
+    _savedProjects
+      ..clear()
+      ..addAll(rawProjects.map((s) {
+        try {
+          return SavedProject.fromJson(
+              jsonDecode(s) as Map<String, dynamic>);
+        } catch (_) {
+          return null;
+        }
+      }).whereType<SavedProject>());
+
+    notifyListeners();
+  }
+
+  Future<void> _persistRouteColors() async {
+    await _prefs?.setString(_routeColorsKey, jsonEncode(_routeColors));
+    await _prefs?.setString(_routeSpotsKey, jsonEncode(_routeSpots.map(
+      (k, v) => MapEntry(k, {'lat': v.latitude, 'lng': v.longitude}),
+    )));
+  }
+
+  Future<void> clearActiveProject() async {
+    final p = _prefs;
+    if (p == null) return;
+    await p.remove(_projectKey);
+    await p.remove(_boundaryKey);
+    await p.remove(_routeColorsKey);
+    await p.remove(_routeSpotsKey);
+    _boundaryNodes = [];
+    _routeColors.clear();
+    _routeSpots.clear();
+    _selectedBuildingLocation = null;
+    _selectedAt = null;
+    _autoCalculated = false;
+    _activeProjectName = 'Untitled Survey';
+    notifyListeners();
   }
 
   Future<void> _loadRegisteredUsers() async {
@@ -729,10 +1119,25 @@ class DepthFenceState extends ChangeNotifier {
 
       return 'ok';
     } on AuthException catch (err) {
-      if (err.message.contains('already registered')) return 'exists';
+      debugPrint('════════ AUTH EXCEPTION ════════');
+      debugPrint('Message: ${err.message}');
+      debugPrint('Status : ${err.statusCode}');
+      debugPrint('════════════════════════════════');
+
+      final msg = err.message.toLowerCase();
+      if (msg.contains('already registered') ||
+          msg.contains('user already registered')) {
+        return 'exists';
+      }
+      if (msg.contains('rate limit') || msg.contains('too many')) {
+        return 'ratelimit';
+      }
+      if (msg.contains('password')) {
+        return 'weakpassword';
+      }
       return 'invalid';
     } catch (err) {
-      debugPrint('Register error: $err');
+      debugPrint('Register error (non-auth): $err');
       return 'error';
     }
   }
@@ -776,14 +1181,15 @@ class DepthFenceState extends ChangeNotifier {
           id: row['id'].toString(),
           title: row['title'] ?? 'Unknown',
           description: row['description'] ?? '',
-          parcelId: row['parcel_id'] ?? '',
+          parcelId: row['parcel_id']?.toString() ?? '',
           severity: row['severity'] ?? 'medium',
           status: row['status'] ?? 'new',
           location: LatLng(
-            (row['latitude'] as num).toDouble(),
-            (row['longitude'] as num).toDouble(),
+            (row['latitude'] as num?)?.toDouble() ?? 20.5937,
+            (row['longitude'] as num?)?.toDouble() ?? 78.9629,
           ),
-          detectedAt: DateTime.parse(row['detected_at']),
+          detectedAt: DateTime.tryParse(row['detected_at']?.toString() ?? '') ??
+              DateTime.now(),
         ));
       }
       notifyListeners();
@@ -807,8 +1213,8 @@ class DepthFenceState extends ChangeNotifier {
           ownerName: row['owner_name'] ?? '',
           areaHa: (row['area_ha'] as num?)?.toDouble() ?? 0.0,
           center: LatLng(
-            (row['latitude'] as num).toDouble(),
-            (row['longitude'] as num).toDouble(),
+            (row['latitude'] as num?)?.toDouble() ?? 20.5937,
+            (row['longitude'] as num?)?.toDouble() ?? 78.9629,
           ),
           status: row['status'] ?? 'pending',
         ));
@@ -963,6 +1369,7 @@ class DepthFenceApp extends StatelessWidget {
         '/ai_vision_scanner': (context) => const AIVisionScannerScreen(),
         '/gemini_chat': (context) => const GeminiChatScreen(),
         '/gemini_key': (context) => const GeminiKeyScreen(),
+        '/report_png': (context) => const SurveyReportPngScreen(),
       },
     );
   }
@@ -1520,9 +1927,12 @@ class _LoginScreenState extends State<LoginScreen> {
     final s = Provider.of<DepthFenceState>(context, listen: false);
     await s.loginAsDemoUser();
 
-    // ⭐ Load real data from Supabase
-    await s.loadAnomaliesFromSupabase();
-    await s.loadParcelsFromSupabase();
+    try {
+      await s.loadAnomaliesFromSupabase();
+      await s.loadParcelsFromSupabase();
+    } catch (e) {
+      debugPrint('Demo Supabase load skipped: $e');
+    }
 
     if (!mounted) return;
     Navigator.pushReplacementNamed(context, '/shell');
@@ -1833,11 +2243,23 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
     switch (result) {
       case 'exists':
         setState(() => _error =
-        'An account with this email already exists. Please sign in.');
+            'An account with this email already exists. Please sign in.');
+        return;
+      case 'ratelimit':
+        setState(() => _error =
+            'Too many sign-up attempts. Please wait 5 minutes and try again.');
+        return;
+      case 'weakpassword':
+        setState(() => _error =
+            'Password is too weak. Use at least 8 characters with a number.');
         return;
       case 'invalid':
         setState(() =>
-        _error = 'This email is reserved. Please use a different one.');
+            _error = 'This email is reserved. Please use a different one.');
+        return;
+      case 'error':
+        setState(() => _error =
+            'Network error. Check your internet connection and try again.');
         return;
       case 'ok':
         ScaffoldMessenger.of(context).showSnackBar(
@@ -3596,14 +4018,13 @@ class _HomeMapScreenState extends State<HomeMapScreen> {
       _tappedLocation = point;
     });
 
-    // 1. Smooth animation zoom-in on the tapped coordinates
-    _mapController.move(point, 18.5);
+    final state = Provider.of<DepthFenceState>(context, listen: false);
 
-    // Give the zoom animation a moment to complete
+    // Normal structure selection workflow
+    _mapController.move(point, 18.5);
     await Future.delayed(const Duration(milliseconds: 600));
     if (!mounted) return;
 
-    // 2. Show confirmation bottom sheet
     final confirmed = await showModalBottomSheet<bool>(
       context: context,
       backgroundColor: Colors.transparent,
@@ -3614,24 +4035,24 @@ class _HomeMapScreenState extends State<HomeMapScreen> {
     if (!mounted) return;
 
     if (confirmed == true) {
-      final state = Provider.of<DepthFenceState>(context, listen: false);
-
-      // 3. Auto-fill coordinates
+      state.setIncomingLocation(point);
+      state.saveActiveProject();
       state.setSelectedCoordinates(point);
 
-      // 4. Simulate shadow + solar angle
       final shadow = 30.0 + (point.latitude * 100).abs() % 50;
       final solarAngle = -15.0 - ((point.longitude * 10).abs() % 30);
 
-      // 5. Save to global state (auto-calculates height)
       state.selectBuilding(
         location: point,
         shadowLength: shadow,
         solarAngle: solarAngle,
       );
 
-      // 6. ⭐ AUTO-ROUTE — Switch to Delta Z tab (index 2)
-      state.setTabIndex(2);
+      Navigator.pushNamed(
+        context,
+        '/delta_z_scanner',
+        arguments: {'lat': point.latitude, 'lng': point.longitude},
+      );
     }
 
     setState(() => _isProcessingTap = false);
@@ -3806,6 +4227,8 @@ class _HomeMapScreenState extends State<HomeMapScreen> {
 
     setState(() => _isLoadingLocation = false);
   }
+
+
 
   // ---------- ZOOM ----------
   void _zoomIn() {
@@ -3984,6 +4407,8 @@ class _HomeMapScreenState extends State<HomeMapScreen> {
                   userAgentPackageName: 'com.depthfence.app',
                   maxZoom: 19,
                 ),
+
+
 
               // Selected building marker (when map is tapped)
               if (_tappedLocation != null)
@@ -4454,6 +4879,8 @@ class _HomeMapScreenState extends State<HomeMapScreen> {
                           circular: true,
                         ),
                         const SizedBox(height: 10),
+
+
 
                         // Zoom In
                         _toolButton(
@@ -5102,6 +5529,7 @@ class _MapMenuSheet extends StatelessWidget {
               Navigator.pop(context);
               Navigator.pushNamed(context, '/delta_z_scanner');
             }),
+
             _menuTile(Icons.warning_amber_rounded, 'All Anomalies', onAnomalies),
             _menuTile(Icons.settings_rounded, 'Settings', onSettings),
           ],
@@ -5142,6 +5570,8 @@ class _MapMenuSheet extends StatelessWidget {
     );
   }
 }
+
+
 
 // ============================================================
 // ADD ANOMALY SHEET
@@ -5528,18 +5958,24 @@ class _AddAnomalySheetState extends State<AddAnomalySheet> {
 
                     // Save to Supabase
                     try {
-                      await Supabase.instance.client.from('anomalies').insert({
+                      final userId = Supabase.instance.client.auth.currentUser?.id;
+                      final payload = <String, dynamic>{
                         'title': title,
                         'description': desc,
-                        'parcel_id': _selectedParcelId,
                         'severity': _severity,
                         'status': 'new',
                         'latitude': state.currentLocation.latitude,
                         'longitude': state.currentLocation.longitude,
-                        'detected_by': Supabase.instance.client.auth.currentUser?.id,
-                      });
+                      };
+                      if (_selectedParcelId.isNotEmpty) {
+                        payload['parcel_id'] = _selectedParcelId;
+                      }
+                      if (userId != null) {
+                        payload['detected_by'] = userId;
+                      }
+                      await Supabase.instance.client.from('anomalies').insert(payload);
                     } catch (e) {
-                      debugPrint('Save anomaly failed: $e');
+                      debugPrint('Save anomaly to Supabase skipped/failed: $e');
                     }
 
                     state.addAnomaly(newAnomaly);
@@ -6166,42 +6602,80 @@ class _BoundaryExtractionScreenState
     extends State<BoundaryExtractionScreen> {
   final MapController _mapController = MapController();
   final List<LatLng> _points = [];
-  final bool _drawing = true;
   bool _processing = false;
+  int? _dragging;
 
-  void _addPoint(LatLng p) {
-    if (!_drawing) return;
-    setState(() => _points.add(p));
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final state = Provider.of<DepthFenceState>(context, listen: false);
+      if (state.boundaryNodes.isNotEmpty) {
+        setState(() {
+          _points.addAll(state.boundaryNodes);
+        });
+      }
+    });
   }
 
-  void _clear() => setState(() => _points.clear());
+  void _addPoint(LatLng p) {
+    if (_points.length >= 4) return;
+    setState(() => _points.add(p));
+    _syncState();
+  }
+
+  void _removePoint(int i) {
+    setState(() => _points.removeAt(i));
+    _syncState();
+  }
+
+  void _syncState() {
+    final state = Provider.of<DepthFenceState>(context, listen: false);
+    state.setBoundaryNodes(_points);
+  }
 
   Future<void> _runAiExtract() async {
     if (_points.length < 3) return;
     setState(() => _processing = true);
-    await Future.delayed(const Duration(seconds: 2));
+    await Future.delayed(const Duration(seconds: 1));
 
     setState(() {
       for (int i = 0; i < _points.length; i++) {
         _points[i] = LatLng(
-          _points[i].latitude + 0.00003,
-          _points[i].longitude + 0.00003,
+          _points[i].latitude + 0.00002,
+          _points[i].longitude + 0.00002,
         );
       }
       _processing = false;
     });
-
+    _syncState();
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text('✨ AI snapped polygon to detected boundaries'),
+        content: Text('✨ Boundary snapped'),
         backgroundColor: AppTheme.success,
+      ),
+    );
+  }
+
+  void _showSegmentColorPicker(int segmentIndex) {
+    final total = _points.length;
+    final fromLabel = segmentIndex + 1;
+    final toLabel = (segmentIndex + 1) % total + 1;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _SegmentColorSheet(
+        segmentIndex: segmentIndex,
+        segmentLabel: 'Line $fromLabel-$toLabel',
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
+    final state = Provider.of<DepthFenceState>(context);
+
     return Scaffold(
       backgroundColor: AppTheme.scaffold,
       appBar: AppBar(
@@ -6209,9 +6683,11 @@ class _BoundaryExtractionScreenState
         actions: [
           if (_points.isNotEmpty)
             IconButton(
-              onPressed: _clear,
+              onPressed: () {
+                setState(() => _points.clear());
+                _syncState();
+              },
               icon: const Icon(Icons.delete_outline),
-              tooltip: 'Clear points',
             ),
         ],
       ),
@@ -6220,11 +6696,13 @@ class _BoundaryExtractionScreenState
           FlutterMap(
             mapController: _mapController,
             options: MapOptions(
-              initialCenter: const LatLng(20.5937, 78.9629),
+              initialCenter: _points.isNotEmpty
+                  ? _points.first
+                  : const LatLng(20.5937, 78.9629),
               initialZoom: 18,
               maxZoom: 21,
               minZoom: 10,
-              onTap: (_, point) => _addPoint(point),
+              onTap: (_, p) => _addPoint(p),
             ),
             children: [
               TileLayer(
@@ -6237,31 +6715,109 @@ class _BoundaryExtractionScreenState
                   polygons: [
                     Polygon(
                       points: _points,
-                      color: AppTheme.gold.withValues(alpha: 0.25),
+                      color: AppTheme.gold.withValues(alpha: 0.2),
                       borderStrokeWidth: 3,
                       borderColor: AppTheme.gold,
                     ),
                   ],
                 ),
+              if (_points.length >= 2)
+                PolylineLayer(
+                  polylines: List.generate(_points.length, (i) {
+                    final j = (i + 1) % _points.length;
+                    if (j == 0 && _points.length < 3) {
+                      return Polyline(
+                        points: const [],
+                        strokeWidth: 0,
+                        color: Colors.transparent,
+                      );
+                    }
+                    final hex = state.segmentColorHex(i);
+                    final color = Color(int.parse('FF$hex', radix: 16));
+                    return Polyline(
+                      points: [_points[i], _points[j]],
+                      strokeWidth: 6,
+                      color: color,
+                      borderStrokeWidth: 1.5,
+                      borderColor: Colors.black,
+                    );
+                  }),
+                ),
+              if (_points.length >= 2)
+                MarkerLayer(
+                  markers: List.generate(_points.length, (i) {
+                    final j = (i + 1) % _points.length;
+                    if (j == 0 && _points.length < 3) return null;
+
+                    final mid = LatLng(
+                      (_points[i].latitude + _points[j].latitude) / 2,
+                      (_points[i].longitude + _points[j].longitude) / 2,
+                    );
+                    final hex = state.segmentColorHex(i);
+                    final color = Color(int.parse('FF$hex', radix: 16));
+
+                    return Marker(
+                      point: mid,
+                      width: 40,
+                      height: 40,
+                      child: GestureDetector(
+                        onTap: () => _showSegmentColorPicker(i),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: color,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white, width: 2),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: 0.5),
+                                blurRadius: 8,
+                              ),
+                            ],
+                          ),
+                          child: const Icon(Icons.palette_rounded,
+                              color: Colors.white, size: 18),
+                        ),
+                      ),
+                    );
+                  }).whereType<Marker>().toList(),
+                ),
               MarkerLayer(
-                markers: _points.asMap().entries.map((entry) {
-                  final i = entry.key;
-                  final p = entry.value;
+                markers: _points.asMap().entries.map((e) {
+                  final i = e.key;
+                  final p = e.value;
                   return Marker(
                     point: p,
-                    width: 32,
-                    height: 32,
+                    width: 40,
+                    height: 40,
                     child: GestureDetector(
-                      onTap: () => setState(() => _points.removeAt(i)),
+                      onPanStart: (_) =>
+                          setState(() => _dragging = i),
+                      onPanUpdate: (details) {
+                        final pt = _mapController.camera.pointToLatLng(
+                          math.Point(
+                            details.globalPosition.dx,
+                            details.globalPosition.dy,
+                          ),
+                        );
+                        setState(() {
+                          _points[i] = pt;
+                        });
+                        _syncState();
+                      },
+                      onPanEnd: (_) => setState(() => _dragging = null),
+                      onLongPress: () => _removePoint(i),
                       child: Container(
                         decoration: BoxDecoration(
-                          color: AppTheme.gold,
+                          color: _dragging == i
+                              ? AppTheme.info
+                              : AppTheme.gold,
                           shape: BoxShape.circle,
-                          border: Border.all(color: Colors.black, width: 2),
+                          border:
+                              Border.all(color: Colors.black, width: 2.5),
                           boxShadow: [
                             BoxShadow(
-                              color: AppTheme.gold.withValues(alpha: 0.6),
-                              blurRadius: 8,
+                              color: AppTheme.gold.withValues(alpha: 0.5),
+                              blurRadius: 12,
                             ),
                           ],
                         ),
@@ -6269,9 +6825,9 @@ class _BoundaryExtractionScreenState
                           child: Text(
                             '${i + 1}',
                             style: const TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
                               color: Colors.black,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 13,
                             ),
                           ),
                         ),
@@ -6292,31 +6848,33 @@ class _BoundaryExtractionScreenState
                 color: AppTheme.surface.withValues(alpha: 0.95),
                 borderRadius: BorderRadius.circular(14),
                 border: Border.all(
-                  color: AppTheme.gold.withValues(alpha: 0.3),
-                ),
+                    color: AppTheme.gold.withValues(alpha: 0.3)),
               ),
               child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Nodes: ${_points.length}',
-                        style: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.bold,
-                          color: AppTheme.textPrimary,
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Nodes: ${_points.length}/4',
+                          style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                            color: AppTheme.textPrimary,
+                          ),
                         ),
-                      ),
-                      const Text(
-                        'Tap map to drop points',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: AppTheme.textSecondary,
+                        Text(
+                          _points.length < 4
+                              ? 'Tap map to drop points'
+                              : 'Long-press to delete • drag to move',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: AppTheme.textSecondary,
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                   if (_points.length >= 3)
                     ElevatedButton.icon(
@@ -6333,14 +6891,14 @@ class _BoundaryExtractionScreenState
                       ),
                       icon: _processing
                           ? const SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          valueColor: AlwaysStoppedAnimation<Color>(
-                              Colors.black),
-                        ),
-                      )
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                valueColor: AlwaysStoppedAnimation<Color>(
+                                    Colors.black),
+                              ),
+                            )
                           : const Icon(Icons.auto_awesome, size: 16),
                       label: const Text(
                         'AI Extract',
@@ -6352,6 +6910,13 @@ class _BoundaryExtractionScreenState
               ),
             ),
           ),
+          if (_points.length >= 2)
+            Positioned(
+              bottom: 90,
+              left: 16,
+              right: 16,
+              child: _SideLengthsPanel(points: _points),
+            ),
           Positioned(
             bottom: 20,
             left: 16,
@@ -6362,29 +6927,20 @@ class _BoundaryExtractionScreenState
                   child: ElevatedButton.icon(
                     onPressed: _points.length >= 3
                         ? () async {
-                      final messenger = ScaffoldMessenger.of(context);
-                      try {
-                        await Supabase.instance.client.from('parcels').insert({
-                          'ulpin': 'ULPIN-${DateTime.now().millisecondsSinceEpoch}',
-                          'owner_name': 'Field Survey',
-                          'area_ha': 2.34,
-                          'latitude': _points.first.latitude,
-                          'longitude': _points.first.longitude,
-                          'status': 'pending',
-                          'created_by': Supabase.instance.client.auth.currentUser?.id,
-                        });
-
-                        if (!mounted) return;
-                        messenger.showSnackBar(
-                          const SnackBar(
-                            content: Text('✅ Boundary saved to database!'),
-                            backgroundColor: AppTheme.emerald,
-                          ),
-                        );
-                      } catch (e) {
-                        debugPrint('Save boundary failed: $e');
-                      }
-                    }
+                            final state = Provider.of<DepthFenceState>(
+                                context,
+                                listen: false);
+                            final messenger = ScaffoldMessenger.of(context);
+                            state.setBoundaryNodes(_points);
+                            await state.saveActiveProject();
+                            if (!mounted) return;
+                            messenger.showSnackBar(
+                              const SnackBar(
+                                content: Text('✅ Boundary saved'),
+                                backgroundColor: AppTheme.success,
+                              ),
+                            );
+                          }
                         : null,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppTheme.success,
@@ -6406,6 +6962,325 @@ class _BoundaryExtractionScreenState
     );
   }
 }
+
+class _SegmentColorSheet extends StatelessWidget {
+  final int segmentIndex;
+  final String segmentLabel;
+
+  const _SegmentColorSheet({
+    required this.segmentIndex,
+    required this.segmentLabel,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final state = Provider.of<DepthFenceState>(context);
+    final current = state.segmentStatuses[segmentIndex] ?? 'normal';
+
+    final options = [
+      {'key': 'problem',    'label': 'Red',        'subtitle': 'Problem',    'color': const Color(0xFFEF4444)},
+      {'key': 'verified',   'label': 'Green',      'subtitle': 'Verified',   'color': const Color(0xFF22C55E)},
+      {'key': 'inspection', 'label': 'Yellow',     'subtitle': 'Inspection', 'color': const Color(0xFFF59E0B)},
+      {'key': 'normal',     'label': 'Gray',       'subtitle': 'Normal',     'color': const Color(0xFF6B7280)},
+    ];
+
+    String selected = current;
+
+    return StatefulBuilder(
+      builder: (context, setSheetState) => SafeArea(
+        child: Container(
+          margin: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: AppTheme.surface,
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(
+              color: AppTheme.gold.withValues(alpha: 0.4),
+              width: 1.2,
+            ),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: AppTheme.textMuted.withValues(alpha: 0.4),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 18),
+
+              Row(
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: AppTheme.gold.withValues(alpha: 0.15),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.palette_rounded,
+                        color: AppTheme.gold, size: 20),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          segmentLabel,
+                          style: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w800,
+                            color: AppTheme.textPrimary,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        const Text(
+                          'Select Color',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: AppTheme.textSecondary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+
+              Row(
+                children: options.map((opt) {
+                  final isSel = selected == opt['key'];
+                  final col = opt['color'] as Color;
+                  return Expanded(
+                    child: GestureDetector(
+                      onTap: () =>
+                          setSheetState(() => selected = opt['key'] as String),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 3),
+                        child: Column(
+                          children: [
+                            Container(
+                              width: 56,
+                              height: 56,
+                              decoration: BoxDecoration(
+                                color: col,
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: isSel ? Colors.white : Colors.transparent,
+                                  width: 3,
+                                ),
+                                boxShadow: isSel
+                                    ? [
+                                        BoxShadow(
+                                          color: col.withValues(alpha: 0.6),
+                                          blurRadius: 12,
+                                          spreadRadius: 2,
+                                        ),
+                                      ]
+                                    : null,
+                              ),
+                              child: isSel
+                                  ? const Icon(Icons.check_rounded,
+                                      color: Colors.white, size: 26)
+                                  : null,
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              opt['subtitle'] as String,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                color: isSel ? col : AppTheme.textSecondary,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+              const SizedBox(height: 22),
+
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.pop(context),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppTheme.textPrimary,
+                        side: const BorderSide(color: AppTheme.border),
+                        minimumSize: const Size.fromHeight(50),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      child: const Text('Cancel'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    flex: 2,
+                    child: ElevatedButton(
+                      onPressed: () {
+                        state.setSegmentStatus(segmentIndex, selected);
+                        Navigator.pop(context);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('🎨 $segmentLabel → $selected'),
+                            backgroundColor: AppTheme.success,
+                            duration: const Duration(seconds: 1),
+                            behavior: SnackBarBehavior.floating,
+                          ),
+                        );
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppTheme.gold,
+                        foregroundColor: Colors.black,
+                        minimumSize: const Size.fromHeight(50),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      child: const Text(
+                        'Apply',
+                        style: TextStyle(fontWeight: FontWeight.w800),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SideLengthsPanel extends StatelessWidget {
+  final List<LatLng> points;
+  const _SideLengthsPanel({required this.points});
+
+  @override
+  Widget build(BuildContext context) {
+    final sides = SurveyGeometry.sidesOf(points);
+    const labels = ['A–B', 'B–C', 'C–D', 'D–A'];
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppTheme.surface.withValues(alpha: 0.95),
+        borderRadius: BorderRadius.circular(14),
+        border:
+            Border.all(color: AppTheme.gold.withValues(alpha: 0.35)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ...List.generate(sides.length, (i) {
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Row(
+                children: [
+                  Container(
+                    width: 34,
+                    height: 22,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: AppTheme.gold,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      labels[i],
+                      style: const TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w900,
+                        color: Colors.black,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      SurveyGeometry.format(sides[i]),
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w900,
+                        color: AppTheme.gold,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
+          const Divider(color: AppTheme.border, height: 12),
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'PERIMETER',
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: AppTheme.textSecondary,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              Text(
+                SurveyGeometry.format(
+                    SurveyGeometry.perimeter(points)),
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w900,
+                  color: AppTheme.gold,
+                  fontFamily: 'monospace',
+                ),
+              ),
+            ],
+          ),
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'AREA',
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: AppTheme.textSecondary,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              Text(
+                '${SurveyGeometry.areaM2(points).toStringAsFixed(1)} m²',
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w900,
+                  color: AppTheme.gold,
+                  fontFamily: 'monospace',
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================
+// MAP 3: 3D VOLUMETRIC TOPOGRAPHICAL HEATMAP
+// ============================================================
 
 // ============================================================
 // MAP 3: 3D VOLUMETRIC TOPOGRAPHICAL HEATMAP
@@ -6882,6 +7757,126 @@ class _AnomalyDetectionScreenState extends State<AnomalyDetectionScreen> {
   final MapController _mapController = MapController();
   int _selectedIndex = 0;
 
+  Future<void> _showAddAnomalyDialog(BuildContext context) async {
+    final titleController = TextEditingController();
+    final parcelController = TextEditingController(text: 'ULPIN-2024-004-D');
+    String severity = 'critical';
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDlgState) => AlertDialog(
+          backgroundColor: AppTheme.surface,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Row(
+            children: [
+              Icon(Icons.add_alert_rounded, color: AppTheme.gold, size: 22),
+              SizedBox(width: 8),
+              Text('Add Anomaly',
+                  style: TextStyle(
+                      color: AppTheme.gold, fontWeight: FontWeight.bold)),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: titleController,
+                autofocus: true,
+                style: const TextStyle(color: AppTheme.textPrimary),
+                decoration: InputDecoration(
+                  labelText: 'Title',
+                  hintText: 'e.g. Illegal Fencing Detected',
+                  filled: true,
+                  fillColor: AppTheme.card,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: AppTheme.border),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: parcelController,
+                style: const TextStyle(color: AppTheme.textPrimary),
+                decoration: InputDecoration(
+                  labelText: 'Parcel ULPIN',
+                  filled: true,
+                  fillColor: AppTheme.card,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: AppTheme.border),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                initialValue: severity,
+                dropdownColor: AppTheme.card,
+                style: const TextStyle(color: AppTheme.textPrimary),
+                decoration: InputDecoration(
+                  labelText: 'Severity',
+                  filled: true,
+                  fillColor: AppTheme.card,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                items: const [
+                  DropdownMenuItem(value: 'critical', child: Text('Critical')),
+                  DropdownMenuItem(value: 'high', child: Text('High')),
+                  DropdownMenuItem(value: 'medium', child: Text('Medium')),
+                ],
+                onChanged: (v) {
+                  if (v != null) setDlgState(() => severity = v);
+                },
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel',
+                  style: TextStyle(color: AppTheme.textSecondary)),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                final t = titleController.text.trim();
+                if (t.isEmpty) return;
+                final state =
+                    Provider.of<DepthFenceState>(context, listen: false);
+                final newAnomaly = Anomaly(
+                  id: 'ANM-${DateTime.now().millisecondsSinceEpoch % 1000}',
+                  title: t,
+                  description: 'Manually logged field anomaly',
+                  parcelId: parcelController.text.trim(),
+                  severity: severity,
+                  status: 'new',
+                  location: state.currentLocation,
+                  detectedAt: DateTime.now(),
+                );
+                state.addAnomaly(newAnomaly);
+                Navigator.pop(ctx);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('✅ Anomaly logged successfully'),
+                    backgroundColor: AppTheme.success,
+                  ),
+                );
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.gold,
+                foregroundColor: Colors.black,
+              ),
+              child: const Text('Add'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = Provider.of<DepthFenceState>(context);
@@ -6889,7 +7884,16 @@ class _AnomalyDetectionScreenState extends State<AnomalyDetectionScreen> {
 
     return Scaffold(
       backgroundColor: AppTheme.scaffold,
-      appBar: AppBar(title: const Text('Anomaly Overlay Map')),
+      appBar: AppBar(
+        title: const Text('Anomaly Overlay Map'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.add_rounded, color: AppTheme.gold),
+            tooltip: 'Add Anomaly',
+            onPressed: () => _showAddAnomalyDialog(context),
+          ),
+        ],
+      ),
       body: Column(
         children: [
           SizedBox(
@@ -6941,7 +7945,7 @@ class _AnomalyDetectionScreenState extends State<AnomalyDetectionScreen> {
                             boxShadow: [
                               BoxShadow(
                                 color:
-                                a.severityColor.withValues(alpha: 0.6),
+                                    a.severityColor.withValues(alpha: 0.6),
                                 blurRadius: 12,
                                 spreadRadius: 2,
                               ),
@@ -6958,87 +7962,136 @@ class _AnomalyDetectionScreenState extends State<AnomalyDetectionScreen> {
             ),
           ),
           Expanded(
-            child: ListView.builder(
-              padding: const EdgeInsets.all(16),
-              itemCount: anomalies.length,
-              itemBuilder: (context, i) {
-                final a = anomalies[i];
-                final selected = _selectedIndex == i;
-                return Container(
-                  margin: const EdgeInsets.only(bottom: 10),
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: selected
-                        ? a.severityColor.withValues(alpha: 0.08)
-                        : AppTheme.card,
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(
-                      color: selected
-                          ? a.severityColor.withValues(alpha: 0.5)
-                          : AppTheme.border,
-                      width: selected ? 1.5 : 1,
+            child: anomalies.isEmpty
+                ? const Center(
+                    child: Text(
+                      'No anomalies recorded',
+                      style: TextStyle(color: AppTheme.textMuted),
                     ),
-                  ),
-                  child: Row(
-                    children: [
-                      Container(
-                        width: 42,
-                        height: 42,
+                  )
+                : ListView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: anomalies.length,
+                    itemBuilder: (context, i) {
+                      final a = anomalies[i];
+                      final selected = _selectedIndex == i;
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 10),
+                        padding: const EdgeInsets.all(14),
                         decoration: BoxDecoration(
-                          color: a.severityColor.withValues(alpha: 0.15),
-                          shape: BoxShape.circle,
+                          color: selected
+                              ? a.severityColor.withValues(alpha: 0.08)
+                              : AppTheme.card,
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: selected
+                                ? a.severityColor.withValues(alpha: 0.5)
+                                : AppTheme.border,
+                            width: selected ? 1.5 : 1,
+                          ),
                         ),
-                        child: Icon(a.severityIcon,
-                            color: a.severityColor, size: 22),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                        child: Row(
                           children: [
-                            Text(
-                              a.title,
-                              style: const TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.bold,
-                                color: AppTheme.textPrimary,
+                            Container(
+                              width: 42,
+                              height: 42,
+                              decoration: BoxDecoration(
+                                color: a.severityColor.withValues(alpha: 0.15),
+                                shape: BoxShape.circle,
+                              ),
+                              child: Icon(a.severityIcon,
+                                  color: a.severityColor, size: 22),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    a.title,
+                                    style: const TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.bold,
+                                      color: AppTheme.textPrimary,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    '${a.parcelId} • Status: ${a.status.toUpperCase()}',
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      color: AppTheme.textSecondary,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
-                            const SizedBox(height: 4),
-                            Text(
-                              a.parcelId,
-                              style: const TextStyle(
-                                fontSize: 11,
-                                color: AppTheme.textSecondary,
-                              ),
+                            PopupMenuButton<String>(
+                              icon: const Icon(Icons.more_vert_rounded,
+                                  color: AppTheme.textSecondary, size: 20),
+                              color: AppTheme.surface,
+                              onSelected: (val) {
+                                if (val == 'delete') {
+                                  state.deleteAnomaly(a.id);
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('🗑️ Anomaly deleted'),
+                                      backgroundColor: AppTheme.danger,
+                                    ),
+                                  );
+                                } else {
+                                  state.updateAnomalyStatus(a.id, val);
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                          '✏️ Status updated to ${val.toUpperCase()}'),
+                                      backgroundColor: AppTheme.info,
+                                    ),
+                                  );
+                                }
+                              },
+                              itemBuilder: (ctx) => [
+                                const PopupMenuItem(
+                                  value: 'new',
+                                  child: Text('Mark New',
+                                      style: TextStyle(
+                                          color: AppTheme.textPrimary)),
+                                ),
+                                const PopupMenuItem(
+                                  value: 'in_progress',
+                                  child: Text('Mark In Progress',
+                                      style: TextStyle(
+                                          color: AppTheme.warning)),
+                                ),
+                                const PopupMenuItem(
+                                  value: 'resolved',
+                                  child: Text('Mark Resolved',
+                                      style: TextStyle(
+                                          color: AppTheme.success)),
+                                ),
+                                const PopupMenuDivider(),
+                                const PopupMenuItem(
+                                  value: 'delete',
+                                  child: Text('Delete',
+                                      style: TextStyle(
+                                          color: AppTheme.danger)),
+                                ),
+                              ],
                             ),
                           ],
                         ),
-                      ),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 3),
-                        decoration: BoxDecoration(
-                          color: a.severityColor.withValues(alpha: 0.2),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Text(
-                          a.severity.toUpperCase(),
-                          style: TextStyle(
-                            fontSize: 9,
-                            fontWeight: FontWeight.bold,
-                            color: a.severityColor,
-                            letterSpacing: 0.5,
-                          ),
-                        ),
-                      ),
-                    ],
+                      );
+                    },
                   ),
-                );
-              },
-            ),
           ),
         ],
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () => _showAddAnomalyDialog(context),
+        backgroundColor: AppTheme.gold,
+        foregroundColor: Colors.black,
+        tooltip: 'Log Anomaly',
+        child: const Icon(Icons.add_rounded),
       ),
     );
   }
@@ -7048,21 +8101,283 @@ class _AnomalyDetectionScreenState extends State<AnomalyDetectionScreen> {
 // MAP 6: CAD / BLUEPRINT GRID MAP
 // ============================================================
 
-class BlueprintDownloadScreen extends StatelessWidget {
+class BlueprintDownloadScreen extends StatefulWidget {
   const BlueprintDownloadScreen({super.key});
 
   @override
+  State<BlueprintDownloadScreen> createState() =>
+      _BlueprintDownloadScreenState();
+}
+
+class _BlueprintDownloadScreenState extends State<BlueprintDownloadScreen> {
+  bool _busy = false;
+
+  Future<void> _exportPdf() async {
+    setState(() => _busy = true);
+    try {
+      final state = Provider.of<DepthFenceState>(context, listen: false);
+      final file = await PdfGenerator.generateAndSave(state: state);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('✅ PDF saved:\n${file.path}'),
+          backgroundColor: AppTheme.emerald,
+          duration: const Duration(seconds: 5),
+          action: SnackBarAction(
+            label: 'SHARE',
+            textColor: Colors.white,
+            onPressed: () async {
+              await Printing.sharePdf(
+                bytes: await file.readAsBytes(),
+                filename: file.path.split('/').last,
+              );
+            },
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('❌ PDF failed: $e'),
+          backgroundColor: AppTheme.danger,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _exportDxf() async {
+    setState(() => _busy = true);
+    try {
+      final state = Provider.of<DepthFenceState>(context, listen: false);
+      final corners = state.boundaryNodes.isNotEmpty
+          ? state.boundaryNodes
+          : [
+              const LatLng(20.5937, 78.9629),
+              const LatLng(20.5945, 78.9629),
+              const LatLng(20.5945, 78.9637),
+              const LatLng(20.5937, 78.9637),
+            ];
+      final dxf = _buildDxf(corners);
+      final dir = await getApplicationDocumentsDirectory();
+      final ts = DateTime.now().millisecondsSinceEpoch;
+      final file = File('${dir.path}/DepthFence_$ts.dxf');
+      await file.writeAsString(dxf);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('✅ DXF saved:\n${file.path}'),
+          backgroundColor: AppTheme.emerald,
+          duration: const Duration(seconds: 5),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('❌ DXF failed: $e'),
+          backgroundColor: AppTheme.danger,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Builds a minimal ASCII DXF R12 file with the polygon boundary
+  /// plus corner labels. Opens in AutoCAD, LibreCAD, QCAD, Inkscape.
+  String _buildDxf(List<LatLng> corners) {
+    final cLat = corners.map((c) => c.latitude).reduce((a, b) => a + b) /
+        corners.length;
+    final cLng = corners.map((c) => c.longitude).reduce((a, b) => a + b) /
+        corners.length;
+    const mPerDegLat = 111320.0;
+    final mPerDegLng = 111320.0 * math.cos(cLat * math.pi / 180);
+
+    double x(LatLng p) => (p.longitude - cLng) * mPerDegLng;
+    double y(LatLng p) => (p.latitude - cLat) * mPerDegLat;
+
+    final buf = StringBuffer();
+
+    buf.writeln('0\nSECTION');
+    buf.writeln('2\nHEADER');
+    buf.writeln('9\n\$ACADVER');
+    buf.writeln('1\nAC1009');
+    buf.writeln('0\nENDSEC');
+
+    buf.writeln('0\nSECTION');
+    buf.writeln('2\nTABLES');
+    buf.writeln('0\nENDSEC');
+
+    buf.writeln('0\nSECTION');
+    buf.writeln('2\nENTITIES');
+
+    buf.writeln('0\nLWPOLYLINE');
+    buf.writeln('8\nBOUNDARY');
+    buf.writeln('90\n${corners.length}');
+    buf.writeln('70\n1');
+    for (final c in corners) {
+      buf.writeln('10\n${x(c).toStringAsFixed(4)}');
+      buf.writeln('20\n${y(c).toStringAsFixed(4)}');
+    }
+
+    for (int i = 0; i < corners.length; i++) {
+      final label = String.fromCharCode(65 + i);
+      final cx = x(corners[i]);
+      final cy = y(corners[i]);
+
+      buf.writeln('0\nPOINT');
+      buf.writeln('8\nCORNERS');
+      buf.writeln('10\n${cx.toStringAsFixed(4)}');
+      buf.writeln('20\n${cy.toStringAsFixed(4)}');
+
+      buf.writeln('0\nTEXT');
+      buf.writeln('8\nLABELS');
+      buf.writeln('10\n${(cx + 1).toStringAsFixed(4)}');
+      buf.writeln('20\n${(cy + 1).toStringAsFixed(4)}');
+      buf.writeln('40\n2.0');
+      buf.writeln('1\n$label');
+    }
+
+    final sides = SurveyGeometry.sidesOf(corners);
+    for (int i = 0; i < corners.length; i++) {
+      final j = (i + 1) % corners.length;
+      final midX = (x(corners[i]) + x(corners[j])) / 2;
+      final midY = (y(corners[i]) + y(corners[j])) / 2;
+      buf.writeln('0\nTEXT');
+      buf.writeln('8\nDIMENSIONS');
+      buf.writeln('10\n${midX.toStringAsFixed(4)}');
+      buf.writeln('20\n${midY.toStringAsFixed(4)}');
+      buf.writeln('40\n1.5');
+      buf.writeln('1\n${sides[i].toStringAsFixed(2)} m');
+    }
+
+    buf.writeln('0\nENDSEC');
+    buf.writeln('0\nEOF');
+
+    return buf.toString();
+  }
+
+  Future<void> _exportAll() async {
+    await _exportPdf();
+    await _exportDxf();
+  }
+
+  Future<void> _promptSaveName() async {
+    final controller = TextEditingController(
+      text: 'Survey ${DateTime.now().toString().split(' ')[0]}',
+    );
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('Save Project',
+            style: TextStyle(color: AppTheme.gold, fontWeight: FontWeight.bold)),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: const TextStyle(color: AppTheme.textPrimary),
+          decoration: InputDecoration(
+            hintText: 'Project name',
+            hintStyle: const TextStyle(color: AppTheme.textMuted),
+            filled: true,
+            fillColor: AppTheme.card,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: AppTheme.border),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: AppTheme.border),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: AppTheme.gold),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel',
+                style: TextStyle(color: AppTheme.textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.gold,
+              foregroundColor: Colors.black,
+            ),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (name == null || name.isEmpty) return;
+    if (!mounted) return;
+    final state = Provider.of<DepthFenceState>(context, listen: false);
+    await state.saveCurrentAsProject(name);
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('💾 Saved: $name'),
+        backgroundColor: AppTheme.success,
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
-    const corners = [
-      LatLng(20.5937, 78.9629),
-      LatLng(20.5945, 78.9629),
-      LatLng(20.5945, 78.9637),
-      LatLng(20.5937, 78.9637),
-    ];
+    final state = Provider.of<DepthFenceState>(context);
+    final corners = state.boundaryNodes.isNotEmpty
+        ? state.boundaryNodes
+        : const [
+            LatLng(20.5937, 78.9629),
+            LatLng(20.5945, 78.9629),
+            LatLng(20.5945, 78.9637),
+            LatLng(20.5937, 78.9637),
+          ];
 
     return Scaffold(
       backgroundColor: AppTheme.scaffold,
-      appBar: AppBar(title: const Text('CAD Blueprint')),
+      appBar: AppBar(
+        title: const Text('CAD Blueprint'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.save_rounded),
+            tooltip: 'Save Project',
+            onPressed: _promptSaveName,
+          ),
+          IconButton(
+            icon: const Icon(Icons.folder_open_rounded),
+            tooltip: 'Open Project',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const ProjectsListScreen()),
+              );
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.description_outlined),
+            tooltip: 'Report Preview',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const ReportPreviewScreen(),
+                ),
+              );
+            },
+          ),
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -7128,7 +8443,7 @@ class BlueprintDownloadScreen extends StatelessWidget {
                         const SizedBox(width: 10),
                         Text(
                           '${e.value.latitude.toStringAsFixed(5)}, '
-                              '${e.value.longitude.toStringAsFixed(5)}',
+                          '${e.value.longitude.toStringAsFixed(5)}',
                           style: const TextStyle(
                             fontSize: 12,
                             color: AppTheme.textPrimary,
@@ -7143,11 +8458,13 @@ class BlueprintDownloadScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 16),
+          SideLengthsPanelForBlueprint(corners: corners),
+          const SizedBox(height: 16),
           Row(
             children: [
               Expanded(
                 child: ElevatedButton.icon(
-                  onPressed: () {},
+                  onPressed: _busy ? null : _exportPdf,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppTheme.card,
                     foregroundColor: AppTheme.gold,
@@ -7164,7 +8481,7 @@ class BlueprintDownloadScreen extends StatelessWidget {
               const SizedBox(width: 10),
               Expanded(
                 child: ElevatedButton.icon(
-                  onPressed: () {},
+                  onPressed: _busy ? null : _exportDxf,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppTheme.card,
                     foregroundColor: AppTheme.gold,
@@ -7181,7 +8498,7 @@ class BlueprintDownloadScreen extends StatelessWidget {
               const SizedBox(width: 10),
               Expanded(
                 child: ElevatedButton.icon(
-                  onPressed: () {},
+                  onPressed: _busy ? null : _exportAll,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppTheme.gold,
                     foregroundColor: Colors.black,
@@ -7190,8 +8507,19 @@ class BlueprintDownloadScreen extends StatelessWidget {
                       borderRadius: BorderRadius.circular(12),
                     ),
                   ),
-                  icon: const Icon(Icons.download_rounded),
-                  label: const Text('All'),
+                  icon: _busy
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                              Colors.black,
+                            ),
+                          ),
+                        )
+                      : const Icon(Icons.download_rounded),
+                  label: Text(_busy ? '...' : 'All'),
                 ),
               ),
             ],
@@ -7200,6 +8528,117 @@ class BlueprintDownloadScreen extends StatelessWidget {
       ),
     );
   }
+}
+
+class SideLengthsPanelForBlueprint extends StatelessWidget {
+  final List<LatLng> corners;
+  const SideLengthsPanelForBlueprint({super.key, required this.corners});
+
+  @override
+  Widget build(BuildContext context) {
+    if (corners.length < 2) return const SizedBox.shrink();
+    final sides = SurveyGeometry.sidesOf(corners);
+    const labels = ['A–B', 'B–C', 'C–D', 'D–A'];
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppTheme.card,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppTheme.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'SIDE LENGTHS',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.bold,
+              color: AppTheme.gold,
+              letterSpacing: 1.5,
+            ),
+          ),
+          const SizedBox(height: 12),
+          ...List.generate(sides.length, (i) => Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Row(
+              children: [
+                Container(
+                  width: 40,
+                  height: 26,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: AppTheme.gold,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    labels[i],
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w900,
+                      color: Colors.black,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'Side ${labels[i]}',
+                    style: const TextStyle(
+                      fontSize: 13,
+                      color: AppTheme.textPrimary,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                Text(
+                  SurveyGeometry.format(sides[i]),
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w900,
+                    color: AppTheme.gold,
+                    fontFamily: 'monospace',
+                  ),
+                ),
+              ],
+            ),
+          )),
+          const Divider(color: AppTheme.border),
+          _row('PERIMETER',
+              SurveyGeometry.format(SurveyGeometry.perimeter(corners))),
+          const SizedBox(height: 6),
+          _row('AREA',
+              '${SurveyGeometry.areaM2(corners).toStringAsFixed(1)} m²'),
+        ],
+      ),
+    );
+  }
+
+  Widget _row(String k, String v) => Row(
+        children: [
+          Expanded(
+            child: Text(
+              k,
+              style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+                color: AppTheme.textSecondary,
+                letterSpacing: 1,
+              ),
+            ),
+          ),
+          Text(
+            v,
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w900,
+              color: AppTheme.gold,
+              fontFamily: 'monospace',
+            ),
+          ),
+        ],
+      );
 }
 
 class _CadBlueprintPainter extends CustomPainter {
@@ -8326,6 +9765,532 @@ class CompositeOverviewScreen extends StatelessWidget {
 // REPORT PREVIEW SCREEN (Cadastral Certificate & PDF)
 // ============================================================
 
+// ============================================================
+// SURVEY REPORT PNG EXPORT SCREEN (RepaintBoundary)
+// ============================================================
+
+// ============================================================
+// SURVEY REPORT — HIGH-RES PNG EXPORT
+// Uses RepaintBoundary to capture the gold letterhead as PNG.
+// ============================================================
+
+class SurveyReportPngScreen extends StatefulWidget {
+  const SurveyReportPngScreen({super.key});
+
+  @override
+  State<SurveyReportPngScreen> createState() => _SurveyReportPngScreenState();
+}
+
+class _SurveyReportPngScreenState extends State<SurveyReportPngScreen> {
+  final GlobalKey _reportKey = GlobalKey();
+  Uint8List? _satelliteBytes;
+  bool _loading = true;
+  bool _exporting = false;
+
+  static const Color _gold = Color(0xFFB68A35);
+  static const Color _navy = Color(0xFF001F3F);
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSatellite();
+  }
+
+  Future<void> _loadSatellite() async {
+    final state = Provider.of<DepthFenceState>(context, listen: false);
+
+    final segmentColors = <int, String>{};
+    for (final key in state.segmentStatuses.keys) {
+      segmentColors[key] = state.segmentColorHex(key);
+    }
+
+    try {
+      final bytes = await StaticMapRenderer.render(
+        corners: state.boundaryPoints,
+        segmentColors: segmentColors,
+        targetWidth: 1000,
+        targetHeight: 700,
+      );
+      if (!mounted) return;
+      setState(() {
+        _satelliteBytes = bytes;
+        _loading = false;
+      });
+    } catch (e) {
+      debugPrint('Satellite fetch failed: $e');
+      if (!mounted) return;
+      setState(() => _loading = false);
+    }
+  }
+
+  String _easting(List<LatLng> pts) {
+    if (pts.isEmpty) return '—';
+    final origin = pts.first;
+    final mPerDegLng = 111320.0 * math.cos(origin.latitude * math.pi / 180);
+    final avgLng = pts.map((p) => p.longitude).reduce((a, b) => a + b) / pts.length;
+    final e = (avgLng - origin.longitude) * mPerDegLng;
+    return '${e.toStringAsFixed(2)} m';
+  }
+
+  String _northing(List<LatLng> pts) {
+    if (pts.isEmpty) return '—';
+    final origin = pts.first;
+    final avgLat = pts.map((p) => p.latitude).reduce((a, b) => a + b) / pts.length;
+    final n = (avgLat - origin.latitude) * 111320.0;
+    return '${n.toStringAsFixed(2)} m';
+  }
+
+  Future<void> _exportPng() async {
+    setState(() => _exporting = true);
+    try {
+      final boundary = _reportKey.currentContext!.findRenderObject()
+          as RenderRepaintBoundary;
+      final image = await boundary.toImage(pixelRatio: 3.0);
+      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+      final pngBytes = byteData!.buffer.asUint8List();
+
+      final dir = await getApplicationDocumentsDirectory();
+      final ts = DateTime.now().millisecondsSinceEpoch;
+      final file = File('${dir.path}/DepthFence_Report_$ts.png');
+      await file.writeAsBytes(pngBytes);
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('✅ PNG saved (${(pngBytes.length / 1024).toStringAsFixed(0)} KB)'),
+          backgroundColor: AppTheme.emerald,
+          duration: const Duration(seconds: 6),
+          behavior: SnackBarBehavior.floating,
+          action: SnackBarAction(
+            label: 'SHARE',
+            textColor: Colors.white,
+            onPressed: () async {
+              await Share.shareXFiles(
+                [XFile(file.path)],
+                text: 'DepthFence Survey Report',
+              );
+            },
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('❌ PNG export failed: $e'),
+          backgroundColor: AppTheme.danger,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _exporting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final state = Provider.of<DepthFenceState>(context);
+    final corners = state.boundaryPoints;
+
+    return Scaffold(
+      backgroundColor: AppTheme.scaffold,
+      appBar: AppBar(
+        title: const Text('Survey Report (PNG)'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.download_rounded),
+            onPressed: (_exporting || _loading) ? null : _exportPng,
+            tooltip: 'Download as PNG',
+          ),
+        ],
+      ),
+      body: _loading
+          ? const Center(
+              child: CircularProgressIndicator(
+                valueColor: AlwaysStoppedAnimation<Color>(AppTheme.gold),
+              ),
+            )
+          : SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                children: [
+                  RepaintBoundary(
+                    key: _reportKey,
+                    child: Container(
+                      color: Colors.white,
+                      padding: const EdgeInsets.all(4),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          border: Border.all(color: _gold, width: 1.5),
+                        ),
+                        padding: const EdgeInsets.all(6),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            border: Border.all(color: _gold, width: 3),
+                          ),
+                          padding: const EdgeInsets.all(14),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              _buildHeader(),
+                              const SizedBox(height: 12),
+                              Center(
+                                child: Text(
+                                  state.activeProjectName,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14,
+                                    color: Colors.black87,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+                              Container(
+                                height: 260,
+                                decoration: BoxDecoration(
+                                  border: Border.all(
+                                      color: Colors.black87, width: 1.5),
+                                ),
+                                child: Stack(
+                                  children: [
+                                    Positioned.fill(
+                                      child: _satelliteBytes != null
+                                          ? Image.memory(_satelliteBytes!,
+                                              fit: BoxFit.cover)
+                                          : Container(
+                                              color: Colors.grey[300],
+                                              child: const Center(
+                                                child: Icon(
+                                                    Icons.satellite_alt,
+                                                    size: 48,
+                                                    color: Colors.black45),
+                                              ),
+                                            ),
+                                    ),
+                                    Positioned(
+                                      top: 8,
+                                      right: 8,
+                                      child: _compassRose(),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(height: 14),
+                              const Text(
+                                'BOUNDARY COORDINATES',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w900,
+                                  fontSize: 12,
+                                  letterSpacing: 0.5,
+                                  color: Colors.black87,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Expanded(
+                                    flex: 5,
+                                    child: Column(
+                                      children: corners.asMap().entries.map((e) {
+                                        return Padding(
+                                          padding: const EdgeInsets.symmetric(
+                                              vertical: 3),
+                                          child: Row(
+                                            children: [
+                                              Container(
+                                                width: 18,
+                                                height: 18,
+                                                alignment: Alignment.center,
+                                                decoration: const BoxDecoration(
+                                                  color: Colors.amber,
+                                                  shape: BoxShape.circle,
+                                                ),
+                                                child: Text(
+                                                  '${e.key + 1}',
+                                                  style: const TextStyle(
+                                                    fontSize: 10,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: Colors.black,
+                                                  ),
+                                                ),
+                                              ),
+                                              const SizedBox(width: 8),
+                                              Text(
+                                                '${e.value.latitude.toStringAsFixed(4)}, ${e.value.longitude.toStringAsFixed(4)}',
+                                                style: const TextStyle(
+                                                  fontSize: 10.5,
+                                                  fontFamily: 'monospace',
+                                                  fontWeight: FontWeight.w600,
+                                                  color: Colors.black87,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        );
+                                      }).toList(),
+                                    ),
+                                  ),
+                                  Container(
+                                    width: 1,
+                                    height: 100,
+                                    color: _gold.withValues(alpha: 0.5),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    flex: 6,
+                                    child: Column(
+                                      children: [
+                                        _infoRow('X - Axis (Easting)',
+                                            _easting(corners)),
+                                        _infoRow('Y - Axis (Northing)',
+                                            _northing(corners)),
+                                        const Divider(
+                                            color: _gold,
+                                            thickness: 0.8,
+                                            height: 10),
+                                        _infoRow(
+                                          'Photo Year',
+                                          DateTime.now()
+                                              .toString()
+                                              .substring(0, 10),
+                                        ),
+                                        _infoRow(
+                                          'Downloaded Date',
+                                          DateTime.now()
+                                              .toString()
+                                              .substring(0, 16),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 10),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    vertical: 6, horizontal: 10),
+                                decoration: BoxDecoration(
+                                  color: Colors.grey[100],
+                                  border: Border.all(
+                                      color: _gold.withValues(alpha: 0.4)),
+                                ),
+                                child: Row(
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    const Text(
+                                      'SIH26011  •  SIH26012',
+                                      style: TextStyle(
+                                        fontSize: 8,
+                                        fontWeight: FontWeight.bold,
+                                        letterSpacing: 1.2,
+                                        color: Colors.black54,
+                                      ),
+                                    ),
+                                    Text(
+                                      'DF-${DateTime.now().year}-${DateTime.now().millisecondsSinceEpoch.toString().substring(8)}',
+                                      style: const TextStyle(
+                                        fontSize: 8,
+                                        fontFamily: 'monospace',
+                                        color: Colors.black54,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _navy,
+                        foregroundColor: Colors.white,
+                        minimumSize: const Size.fromHeight(56),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                      ),
+                      onPressed: _exporting ? null : _exportPng,
+                      icon: _exporting
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2.4,
+                                valueColor: AlwaysStoppedAnimation<Color>(
+                                    Colors.white),
+                              ),
+                            )
+                          : const Icon(Icons.image_rounded),
+                      label: Text(_exporting
+                          ? 'Exporting...'
+                          : 'Export as High-Res PNG'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+    );
+  }
+
+  Widget _buildHeader() {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Container(
+          width: 60,
+          height: 60,
+          padding: const EdgeInsets.all(6),
+          decoration: BoxDecoration(
+            border: Border.all(color: _gold, width: 1.5),
+          ),
+          child: Image.asset(
+            'assets/images/logo.png',
+            fit: BoxFit.contain,
+            errorBuilder: (_, _, _) =>
+                const Icon(Icons.terrain, color: _navy, size: 28),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Text(
+                'Depth Fence',
+                style: TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                  fontFamily: 'serif',
+                  color: _navy,
+                ),
+              ),
+              const SizedBox(height: 3),
+              Row(
+                children: [
+                  const Expanded(child: Divider(color: _gold, thickness: 1)),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    child: Transform.rotate(
+                      angle: 0.785398,
+                      child: Container(width: 6, height: 6, color: _gold),
+                    ),
+                  ),
+                  const Expanded(child: Divider(color: _gold, thickness: 1)),
+                ],
+              ),
+              const SizedBox(height: 3),
+              const Text(
+                'LAND SURVEY & INSPECTION REPORT',
+                style: TextStyle(
+                  fontSize: 8,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 1.4,
+                  color: _navy,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 12),
+        Container(
+          width: 78,
+          height: 60,
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            border: Border.all(color: _gold, width: 1.5),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Image.asset(
+                'assets/images/gov_logo.png',
+                width: 20,
+                height: 20,
+                fit: BoxFit.contain,
+                errorBuilder: (_, _, _) =>
+                    const Icon(Icons.account_balance, size: 18, color: _navy),
+              ),
+              const SizedBox(height: 2),
+              const Text(
+                'GOVERNMENT\nDEPARTMENT',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 5.8,
+                  fontWeight: FontWeight.bold,
+                  color: _navy,
+                  height: 1.2,
+                ),
+              ),
+              const Divider(color: _gold, thickness: 0.6, height: 4),
+              const Text(
+                'SURVEY & MAPPING',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 5.2,
+                  fontWeight: FontWeight.bold,
+                  color: _navy,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _compassRose() {
+    return Container(
+      padding: const EdgeInsets.all(5),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.92),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: Colors.black54),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: const [
+          Text('N',
+              style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold)),
+          Icon(Icons.navigation, size: 16, color: Colors.black),
+          Text('S',
+              style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold)),
+        ],
+      ),
+    );
+  }
+
+  Widget _infoRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label,
+              style: const TextStyle(
+                fontSize: 9.5,
+                fontWeight: FontWeight.bold,
+                color: Colors.black87,
+              )),
+          Text(value,
+              style: const TextStyle(
+                fontSize: 9.5,
+                fontFamily: 'monospace',
+                fontWeight: FontWeight.w600,
+                color: Colors.black87,
+              )),
+        ],
+      ),
+    );
+  }
+}
+
 class ReportPreviewScreen extends StatefulWidget {
   const ReportPreviewScreen({super.key});
 
@@ -8389,6 +10354,17 @@ class _ReportPreviewScreenState extends State<ReportPreviewScreen> {
         title: const Text('Report Preview'),
         backgroundColor: AppTheme.surface,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.image_rounded, color: AppTheme.gold),
+            tooltip: 'Export as PNG',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => const SurveyReportPngScreen()),
+              );
+            },
+          ),
           IconButton(
             onPressed: _isGenerating ? null : _downloadReport,
             icon: const Icon(Icons.download_rounded),
@@ -8593,6 +10569,318 @@ class _ReportPreviewScreenState extends State<ReportPreviewScreen> {
 }
 
 // ============================================================
+// PROJECTS LIST SCREEN
+// ============================================================
+
+// ============================================================
+// PROJECTS LIST SCREEN
+// ============================================================
+
+class ProjectsListScreen extends StatefulWidget {
+  const ProjectsListScreen({super.key});
+
+  @override
+  State<ProjectsListScreen> createState() => _ProjectsListScreenState();
+}
+
+class _ProjectsListScreenState extends State<ProjectsListScreen> {
+  bool _exportingBatch = false;
+  int _exportProgress = 0;
+  int _exportTotal = 0;
+
+  Future<void> _batchExportPngs(List<SavedProject> projects) async {
+    if (projects.isEmpty || _exportingBatch) return;
+
+    setState(() {
+      _exportingBatch = true;
+      _exportProgress = 0;
+      _exportTotal = projects.length;
+    });
+
+    final exportedFiles = <XFile>[];
+
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+
+      for (int i = 0; i < projects.length; i++) {
+        setState(() => _exportProgress = i + 1);
+        final proj = projects[i];
+
+        Uint8List? mapImg;
+        if (proj.boundary.isNotEmpty) {
+          try {
+            mapImg = await StaticMapRenderer.render(corners: proj.boundary);
+          } catch (_) {}
+        }
+
+        final recorder = ui.PictureRecorder();
+        final canvas = Canvas(recorder);
+        const w = 1200.0;
+        const h = 1600.0;
+
+        canvas.drawRect(
+            const Rect.fromLTWH(0, 0, w, h), Paint()..color = const Color(0xFF141414));
+
+        final borderPaint = Paint()
+          ..color = const Color(0xFFFFC107)
+          ..strokeWidth = 4
+          ..style = PaintingStyle.stroke;
+        canvas.drawRRect(
+            RRect.fromRectAndRadius(
+                const Rect.fromLTWH(40, 40, w - 80, h - 80),
+                const Radius.circular(16)),
+            borderPaint);
+
+        final titlePainter = TextPainter(
+          text: TextSpan(
+            text: 'DEPTHFENCE CADASTRAL REPORT\nPROJECT: ${proj.name.toUpperCase()}',
+            style: const TextStyle(
+                color: Color(0xFFFFC107),
+                fontSize: 28,
+                fontWeight: FontWeight.bold,
+                height: 1.3),
+          ),
+          textDirection: TextDirection.ltr,
+        )..layout(maxWidth: w - 120);
+        titlePainter.paint(canvas, const Offset(60, 60));
+
+        if (mapImg != null) {
+          final codec = await ui.instantiateImageCodec(mapImg);
+          final frame = await codec.getNextFrame();
+          canvas.drawImageRect(
+            frame.image,
+            Rect.fromLTWH(0, 0, frame.image.width.toDouble(), frame.image.height.toDouble()),
+            const Rect.fromLTWH(60, 160, w - 120, 600),
+            Paint(),
+          );
+        }
+
+        final detailsPainter = TextPainter(
+          text: TextSpan(
+            text: 'Project ID: ${proj.id}\n'
+                'Saved Date: ${proj.savedAt.toString().split('.').first}\n'
+                'Boundary Nodes: ${proj.boundary.length}\n'
+                'Building Height: ${proj.buildingHeight?.toStringAsFixed(2) ?? "N/A"} m\n'
+                'Delta Z Elevation: ${proj.deltaZ?.toStringAsFixed(2) ?? "N/A"} m',
+            style: const TextStyle(
+                color: Colors.white, fontSize: 22, height: 1.6),
+          ),
+          textDirection: TextDirection.ltr,
+        )..layout(maxWidth: w - 120);
+        detailsPainter.paint(canvas, const Offset(60, 800));
+
+        final picture = recorder.endRecording();
+        final image = await picture.toImage(w.toInt(), h.toInt());
+        final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+        final bytes = byteData?.buffer.asUint8List();
+
+        if (bytes != null) {
+          final file =
+              File('${dir.path}/Report_${proj.name.replaceAll(' ', '_')}_${proj.id}.png');
+          await file.writeAsBytes(bytes);
+          exportedFiles.add(XFile(file.path));
+        }
+      }
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('✅ Exported ${exportedFiles.length} project reports as PNG'),
+          backgroundColor: AppTheme.emerald,
+          duration: const Duration(seconds: 5),
+          action: SnackBarAction(
+            label: 'SHARE ALL',
+            textColor: Colors.white,
+            onPressed: () async {
+              if (exportedFiles.isNotEmpty) {
+                await Share.shareXFiles(
+                  exportedFiles,
+                  text: 'DepthFence Batch Cadastral PNG Reports',
+                );
+              }
+            },
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('❌ Batch export failed: $e'),
+          backgroundColor: AppTheme.danger,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _exportingBatch = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final state = Provider.of<DepthFenceState>(context);
+    final projects = state.savedProjects;
+
+    return Scaffold(
+      backgroundColor: AppTheme.scaffold,
+      appBar: AppBar(
+        title: const Text('Saved Projects'),
+        actions: [
+          if (projects.isNotEmpty)
+            IconButton(
+              icon: _exportingBatch
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation<Color>(AppTheme.gold),
+                      ),
+                    )
+                  : const Icon(Icons.file_download_rounded, color: AppTheme.gold),
+              tooltip: 'Batch Export PNG Reports',
+              onPressed: _exportingBatch ? null : () => _batchExportPngs(projects),
+            ),
+        ],
+      ),
+      body: projects.isEmpty
+          ? Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.folder_open_rounded,
+                      color: AppTheme.textMuted, size: 56),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'No saved projects yet',
+                    style: TextStyle(color: AppTheme.textSecondary, fontSize: 14),
+                  ),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'Draw a boundary, then tap Save',
+                    style: TextStyle(color: AppTheme.textMuted, fontSize: 12),
+                  ),
+                ],
+              ),
+            )
+          : Column(
+              children: [
+                if (_exportingBatch)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 10),
+                    color: AppTheme.card,
+                    child: Row(
+                      children: [
+                        const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor:
+                                AlwaysStoppedAnimation<Color>(AppTheme.gold),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            'Exporting PNG reports ($_exportProgress/$_exportTotal)...',
+                            style: const TextStyle(
+                                color: AppTheme.gold,
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                Expanded(
+                  child: ListView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: projects.length,
+                    itemBuilder: (context, i) {
+                      final p = projects[i];
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 12),
+                        decoration: BoxDecoration(
+                          color: AppTheme.card,
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: AppTheme.border),
+                        ),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(14),
+                          onTap: () async {
+                            await state.loadProject(p);
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('📂 Loaded: ${p.name}'),
+                                backgroundColor: AppTheme.success,
+                                behavior: SnackBarBehavior.floating,
+                              ),
+                            );
+                            Navigator.pop(context);
+                          },
+                          child: Padding(
+                            padding: const EdgeInsets.all(14),
+                            child: Row(
+                              children: [
+                                Container(
+                                  width: 44,
+                                  height: 44,
+                                  decoration: BoxDecoration(
+                                    color:
+                                        AppTheme.gold.withValues(alpha: 0.15),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: const Icon(Icons.folder_rounded,
+                                      color: AppTheme.gold, size: 22),
+                                ),
+                                const SizedBox(width: 14),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        p.name,
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                          color: AppTheme.textPrimary,
+                                          fontSize: 14,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 3),
+                                      Text(
+                                        '${p.boundary.length} nodes • ${p.savedAt.toString().split('.').first}',
+                                        style: const TextStyle(
+                                          fontSize: 11,
+                                          color: AppTheme.textSecondary,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.delete_outline,
+                                      color: AppTheme.danger, size: 20),
+                                  onPressed: () => state.deleteProject(p.id),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+    );
+  }
+}
+
+// ============================================================
 // PROFILE SCREEN
 // ============================================================
 
@@ -8688,6 +10976,18 @@ class ProfileScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 16),
+          _tile(
+            context,
+            Icons.folder_rounded,
+            'Saved Projects',
+            '${state.savedProjects.length} saved',
+            () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const ProjectsListScreen()),
+              );
+            },
+          ),
           _tile(
             context,
             Icons.description_outlined,
@@ -9461,6 +11761,175 @@ class _PermissionTile extends StatelessWidget {
   }
 }
 
+// ============================================================
+// STATIC MAP RENDERER — fetches tiles, composes an image
+// ============================================================
+
+class StaticMapRenderer {
+  static Future<Uint8List?> render({
+    required List<LatLng> corners,
+    Map<int, String> segmentColors = const {},
+    int targetWidth = 1200,
+    int targetHeight = 800,
+  }) async {
+    if (corners.length < 2) return null;
+
+    final minLat = corners.map((c) => c.latitude).reduce(math.min);
+    final maxLat = corners.map((c) => c.latitude).reduce(math.max);
+    final minLng = corners.map((c) => c.longitude).reduce(math.min);
+    final maxLng = corners.map((c) => c.longitude).reduce(math.max);
+
+    final latPad = (maxLat - minLat) * 0.35 + 0.0002;
+    final lngPad = (maxLng - minLng) * 0.35 + 0.0002;
+
+    final bMinLat = minLat - latPad;
+    final bMaxLat = maxLat + latPad;
+    final bMinLng = minLng - lngPad;
+    final bMaxLng = maxLng + lngPad;
+
+    int zoom = 18;
+    for (int z = 18; z >= 10; z--) {
+      final x1 = _lonToX(bMinLng, z);
+      final x2 = _lonToX(bMaxLng, z);
+      final y1 = _latToY(bMaxLat, z);
+      final y2 = _latToY(bMinLat, z);
+      if ((x2 - x1) < 4 && (y2 - y1) < 4) {
+        zoom = z;
+        break;
+      }
+    }
+
+    final x1 = _lonToX(bMinLng, zoom).floor();
+    final x2 = _lonToX(bMaxLng, zoom).ceil();
+    final y1 = _latToY(bMaxLat, zoom).floor();
+    final y2 = _latToY(bMinLat, zoom).ceil();
+
+    final tilesWide = x2 - x1 + 1;
+    final tilesHigh = y2 - y1 + 1;
+    if (tilesWide <= 0 || tilesHigh <= 0 || tilesWide * tilesHigh > 25) {
+      return null;
+    }
+
+    final fetched = <String, ui.Image>{};
+    for (int x = x1; x <= x2; x++) {
+      for (int y = y1; y <= y2; y++) {
+        final url = AppConstants.esriSatellite
+            .replaceAll('{z}', '$zoom')
+            .replaceAll('{x}', '$x')
+            .replaceAll('{y}', '$y');
+        try {
+          final resp = await http
+              .get(Uri.parse(url),
+                  headers: {'User-Agent': 'com.depthfence.app'})
+              .timeout(const Duration(seconds: 10));
+          if (resp.statusCode == 200 && resp.bodyBytes.isNotEmpty) {
+            final codec = await ui.instantiateImageCodec(resp.bodyBytes);
+            final frame = await codec.getNextFrame();
+            fetched['$x,$y'] = frame.image;
+          }
+        } catch (_) {}
+      }
+    }
+
+    if (fetched.isEmpty) return null;
+
+    const tileSize = 256.0;
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+
+    for (final e in fetched.entries) {
+      final parts = e.key.split(',');
+      final tx = int.parse(parts[0]) - x1;
+      final ty = int.parse(parts[1]) - y1;
+      canvas.drawImage(
+        e.value,
+        Offset(tx * tileSize, ty * tileSize),
+        Paint(),
+      );
+    }
+
+    final totalW = tilesWide * tileSize;
+    final totalH = tilesHigh * tileSize;
+
+    final path = ui.Path();
+    final projected = <Offset>[];
+    for (int i = 0; i < corners.length; i++) {
+      final c = corners[i];
+      final px = (_lonToX(c.longitude, zoom) - x1) * tileSize;
+      final py = (_latToY(c.latitude, zoom) - y1) * tileSize;
+      projected.add(Offset(px, py));
+      if (i == 0) {
+        path.moveTo(px, py);
+      } else {
+        path.lineTo(px, py);
+      }
+    }
+    path.close();
+
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = const Color(0xFFFFC107).withValues(alpha: 0.15)
+        ..style = PaintingStyle.fill,
+    );
+
+    for (int i = 0; i < projected.length; i++) {
+      final j = (i + 1) % projected.length;
+      final hex = segmentColors[i] ?? '6B7280';
+      final segColor = Color(int.parse('FF$hex', radix: 16));
+      canvas.drawLine(
+        projected[i],
+        projected[j],
+        Paint()
+          ..color = segColor
+          ..strokeWidth = 6
+          ..strokeCap = StrokeCap.round,
+      );
+    }
+
+    for (int i = 0; i < projected.length; i++) {
+      final p = projected[i];
+      canvas.drawCircle(p, 16, Paint()..color = const Color(0xFFFFC107));
+      canvas.drawCircle(
+        p,
+        16,
+        Paint()
+          ..color = Colors.black
+          ..strokeWidth = 2.5
+          ..style = PaintingStyle.stroke,
+      );
+      final tp = TextPainter(
+        text: TextSpan(
+          text: '${i + 1}',
+          style: const TextStyle(
+            color: Colors.black,
+            fontSize: 16,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      tp.paint(canvas, Offset(p.dx - tp.width / 2, p.dy - tp.height / 2));
+    }
+
+    final picture = recorder.endRecording();
+    final img = await picture.toImage(totalW.toInt(), totalH.toInt());
+    final bytes = await img.toByteData(format: ui.ImageByteFormat.png);
+    return bytes?.buffer.asUint8List();
+  }
+
+  static double _lonToX(double lon, int z) => (lon + 180.0) / 360.0 * (1 << z);
+
+  static double _latToY(double lat, int z) {
+    final rad = lat * math.pi / 180.0;
+    return (1.0 -
+            math.log(math.tan(rad) + 1.0 / math.cos(rad)) / math.pi) /
+        2.0 *
+        (1 << z);
+  }
+}
+
+// ============================================================
 // SCREEN: DELTA Z-AXIS SCANNER (AI Shadow Math)
 // ============================================================
 
@@ -10248,6 +12717,18 @@ class PdfGenerator {
   static Future<File> generateAndSave({
     required DepthFenceState state,
   }) async {
+    Uint8List? satelliteBytes;
+    try {
+      satelliteBytes = await StaticMapRenderer.render(
+        corners: state.boundaryPoints,
+      );
+    } catch (e) {
+      debugPrint('Satellite fetch failed: $e');
+    }
+
+    final satelliteImage =
+        satelliteBytes != null ? pw.MemoryImage(satelliteBytes) : null;
+
     final pdf = pw.Document(
       title: 'DepthFence Survey Report',
       author: 'DepthFence Enterprise',
@@ -10325,7 +12806,37 @@ class PdfGenerator {
                   ],
                 ),
               ),
-              pw.SizedBox(height: 20),
+              pw.SizedBox(height: 16),
+
+              // ─── SATELLITE IMAGE ───
+              if (satelliteImage != null) ...[
+                pw.Text(
+                  'SATELLITE VIEW',
+                  style: pw.TextStyle(
+                    fontSize: 11,
+                    fontWeight: pw.FontWeight.bold,
+                    color: PdfColor.fromHex('#0A0E1A'),
+                    letterSpacing: 1,
+                  ),
+                ),
+                pw.SizedBox(height: 8),
+                pw.Container(
+                  height: 200,
+                  decoration: pw.BoxDecoration(
+                    border: pw.Border.all(
+                      color: PdfColor.fromHex('#FFC107'),
+                      width: 1.5,
+                    ),
+                    borderRadius: pw.BorderRadius.circular(4),
+                  ),
+                  child: pw.ClipRRect(
+                    horizontalRadius: 4,
+                    verticalRadius: 4,
+                    child: pw.Image(satelliteImage, fit: pw.BoxFit.cover),
+                  ),
+                ),
+                pw.SizedBox(height: 16),
+              ],
 
               // ─── SECTION: SELECTED BUILDING ───
               pw.Text(
@@ -10920,7 +13431,7 @@ Keep answers concise and field-oriented. Use Indian context (Bhu-Naksha, DILRMP,
   }
 
   /// Calls the Gemini REST API directly using the x-goog-api-key header.
-  /// This is what makes AQ.* and AIzaSy.* keys work.
+  /// Automatically falls back across active Gemini models if one returns 404.
   Future<String> _callGemini(String userText) async {
     final state = Provider.of<DepthFenceState>(context, listen: false);
     final apiKey = state.geminiApiKey;
@@ -10928,10 +13439,14 @@ Keep answers concise and field-oriented. Use Indian context (Bhu-Naksha, DILRMP,
       return '⚠️ No API key set.\n\nTap the 🔑 key icon in the AppBar to paste your Gemini API key.';
     }
 
-    final uri = Uri.parse(
-      'https://generativelanguage.googleapis.com/v1beta/models/'
-      '${AppConstants.geminiModel}:generateContent',
-    );
+    final models = [
+      AppConstants.geminiModel,
+      'gemini-3.6-flash',
+      'gemini-3.5-flash',
+      'gemini-2.5-flash',
+      'gemini-2.0-flash',
+      'gemini-1.5-flash',
+    ];
 
     // Build conversation history for context
     final contents = <Map<String, dynamic>>[];
@@ -10964,52 +13479,70 @@ Keep answers concise and field-oriented. Use Indian context (Bhu-Naksha, DILRMP,
       },
     });
 
-    try {
-      final response = await http
-          .post(
-            uri,
-            headers: {
-              'Content-Type': 'application/json',
-              'x-goog-api-key': apiKey,
-            },
-            body: body,
-          )
-          .timeout(const Duration(seconds: 30));
+    String lastErr = '';
 
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body) as Map<String, dynamic>;
-        final candidates = data['candidates'] as List?;
-        if (candidates == null || candidates.isEmpty) {
-          return '⚠️ Empty response from AI. Try rephrasing.';
-        }
-        final content = candidates[0]['content'] as Map?;
-        final parts = content?['parts'] as List?;
-        if (parts == null || parts.isEmpty) {
-          return '⚠️ AI returned no content. Try again.';
-        }
-        final text = parts[0]['text'] as String?;
-        return (text == null || text.isEmpty)
-            ? '⚠️ AI returned empty text.'
-            : text.trim();
-      }
+    for (final modelId in models.toSet()) {
+      final uri = Uri.parse(
+        'https://generativelanguage.googleapis.com/v1beta/models/'
+        '$modelId:generateContent',
+      );
 
-      // Handle errors with useful messages
-      final errBody = response.body;
-      if (response.statusCode == 400) {
-        return '⚠️ Bad request (400).\n\n$errBody';
+      try {
+        final response = await http
+            .post(
+              uri,
+              headers: {
+                'Content-Type': 'application/json',
+                'x-goog-api-key': apiKey,
+              },
+              body: body,
+            )
+            .timeout(const Duration(seconds: 30));
+
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body) as Map<String, dynamic>;
+          final candidates = data['candidates'] as List?;
+          if (candidates == null || candidates.isEmpty) {
+            return '⚠️ Empty response from AI. Try rephrasing.';
+          }
+          final content = candidates[0]['content'] as Map?;
+          final parts = content?['parts'] as List?;
+          if (parts == null || parts.isEmpty) {
+            return '⚠️ AI returned no content. Try again.';
+          }
+          final text = parts[0]['text'] as String?;
+          return (text == null || text.isEmpty)
+              ? '⚠️ AI returned empty text.'
+              : text.trim();
+        }
+
+        if (response.statusCode == 404) {
+          lastErr = response.body;
+          continue;
+        }
+
+        final errBody = response.body;
+        if (response.statusCode == 400) {
+          return '⚠️ Bad request (400).\n\n$errBody';
+        }
+        if (response.statusCode == 401 || response.statusCode == 403) {
+          return '⚠️ Key rejected (${response.statusCode}).\n\n'
+              'The key may be invalid or the Generative Language API not enabled.\n\n'
+              'Details: $errBody';
+        }
+        if (response.statusCode == 429) {
+          return '⚠️ Rate limit reached. Wait a minute and try again.';
+        }
+        return '⚠️ HTTP ${response.statusCode}\n\n$errBody';
+      } catch (e) {
+        return '⚠️ Network error: $e';
       }
-      if (response.statusCode == 401 || response.statusCode == 403) {
-        return '⚠️ Key rejected (${response.statusCode}).\n\n'
-            'The key may be invalid or the Generative Language API not enabled.\n\n'
-            'Details: $errBody';
-      }
-      if (response.statusCode == 429) {
-        return '⚠️ Rate limit reached. Wait a minute and try again.';
-      }
-      return '⚠️ HTTP ${response.statusCode}\n\n$errBody';
-    } catch (e) {
-      return '⚠️ Network error: $e';
     }
+
+    return '⚠️ All AI models are currently unavailable.\n\n'
+        'Google may have deprecated the models this app uses. '
+        'Check for an app update, or try again later.\n\n'
+        'Technical details: $lastErr';
   }
 
   void _scrollToBottom() {
@@ -11279,6 +13812,73 @@ class _TypingBubble extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+// ============================================================
+// SAVED PROJECT MODEL
+// ============================================================
+
+class SavedProject {
+  final String id;
+  final String name;
+  final LatLng? selectedBuilding;
+  final List<LatLng> boundary;
+  final DateTime savedAt;
+  final double? buildingHeight;
+  final double? deltaZ;
+
+  SavedProject({
+    required this.id,
+    required this.name,
+    required this.selectedBuilding,
+    required this.boundary,
+    required this.savedAt,
+    this.buildingHeight,
+    this.deltaZ,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'selectedBuilding': selectedBuilding == null
+            ? null
+            : {
+                'lat': selectedBuilding!.latitude,
+                'lng': selectedBuilding!.longitude,
+              },
+        'boundary': boundary
+            .map((p) => {'lat': p.latitude, 'lng': p.longitude})
+            .toList(),
+        'savedAt': savedAt.toIso8601String(),
+        'buildingHeight': buildingHeight,
+        'deltaZ': deltaZ,
+      };
+
+  factory SavedProject.fromJson(Map<String, dynamic> j) {
+    final sb = j['selectedBuilding'];
+    final rawBoundary = (j['boundary'] as List?) ?? [];
+    return SavedProject(
+      id: (j['id'] ?? '').toString(),
+      name: (j['name'] ?? '').toString(),
+      selectedBuilding: sb == null
+          ? null
+          : LatLng(
+              (sb['lat'] as num).toDouble(),
+              (sb['lng'] as num).toDouble(),
+            ),
+      boundary: rawBoundary.map((e) {
+        final m = e as Map<String, dynamic>;
+        return LatLng(
+          (m['lat'] as num).toDouble(),
+          (m['lng'] as num).toDouble(),
+        );
+      }).toList(),
+      savedAt: DateTime.tryParse(j['savedAt']?.toString() ?? '') ??
+          DateTime.now(),
+      buildingHeight: (j['buildingHeight'] as num?)?.toDouble(),
+      deltaZ: (j['deltaZ'] as num?)?.toDouble(),
     );
   }
 }
