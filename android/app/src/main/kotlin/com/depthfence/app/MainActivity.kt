@@ -1,4 +1,4 @@
-package com.example.depthfenc
+package com.depthfence.app
 
 import io.flutter.embedding.android.FlutterActivity
 
