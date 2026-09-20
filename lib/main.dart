@@ -8,7 +8,6 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:google_generative_ai/google_generative_ai.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'dart:convert';
@@ -19,7 +18,6 @@ import 'package:path_provider/path_provider.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
-import 'package:file_picker/file_picker.dart';
 // ============================================================
 // SUPABASE CONFIG
 // ============================================================
@@ -69,7 +67,7 @@ class AppConstants {
     'GEMINI_API_KEY',
     defaultValue: '',
   );
-  static const String geminiModel = 'gemini-2.0-flash';
+  static const String geminiModel = 'gemini-2.5-flash';
 }
 
 
@@ -313,6 +311,30 @@ class LandParcel {
 // ============================================================
 
 class DepthFenceState extends ChangeNotifier {
+  // ---------- Runtime Gemini API Key ----------
+  static const String _geminiKeyPref = 'depthfence_gemini_key';
+  String _runtimeGeminiKey = '';
+
+  /// Returns the effective key: user-entered first, then build-time fallback.
+  String get geminiApiKey {
+    if (_runtimeGeminiKey.isNotEmpty) return _runtimeGeminiKey;
+    return AppConstants.geminiApiKey; // from --dart-define
+  }
+
+  bool get hasGeminiKey => geminiApiKey.isNotEmpty;
+
+  /// Persist a user-entered Gemini API key.
+  Future<void> setGeminiKey(String key) async {
+    _runtimeGeminiKey = key.trim();
+    await _prefs?.setString(_geminiKeyPref, _runtimeGeminiKey);
+    notifyListeners();
+  }
+
+  /// Load the runtime key on app start.
+  Future<void> _loadGeminiKey() async {
+    _runtimeGeminiKey = _prefs?.getString(_geminiKeyPref) ?? '';
+  }
+
   bool _isLoggedIn = false;
   String _userRole = 'user';
   String _userEmail = '';
@@ -540,6 +562,7 @@ class DepthFenceState extends ChangeNotifier {
     _prefs = await SharedPreferences.getInstance();
     await _restoreSession();
     await _loadRegisteredUsers();
+    await _loadGeminiKey();
 
     // ⭐ Listen for Supabase auth state changes
     Supabase.instance.client.auth.onAuthStateChange.listen((data) {
@@ -939,6 +962,7 @@ class DepthFenceApp extends StatelessWidget {
         '/permissions': (context) => const PermissionsScreen(),
         '/ai_vision_scanner': (context) => const AIVisionScannerScreen(),
         '/gemini_chat': (context) => const GeminiChatScreen(),
+        '/gemini_key': (context) => const GeminiKeyScreen(),
       },
     );
   }
@@ -10540,7 +10564,296 @@ class PdfGenerator {
 }
 
 // ============================================================
-// GEMINI AI CHAT SCREEN — DepthFence Assistant
+// GEMINI API KEY SETUP SCREEN
+// ============================================================
+
+class GeminiKeyScreen extends StatefulWidget {
+  const GeminiKeyScreen({super.key});
+
+  @override
+  State<GeminiKeyScreen> createState() => _GeminiKeyScreenState();
+}
+
+class _GeminiKeyScreenState extends State<GeminiKeyScreen> {
+  final _controller = TextEditingController();
+  bool _obscure = true;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final state = Provider.of<DepthFenceState>(context, listen: false);
+    if (state.geminiApiKey.isNotEmpty) {
+      _controller.text = state.geminiApiKey;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  String? _validate(String key) {
+    final k = key.trim();
+    if (k.isEmpty) return 'Please paste your Gemini API key';
+    if (!k.startsWith('AIzaSy') && !k.startsWith('AQ.')) {
+      return 'Key must start with "AIzaSy" or "AQ." — get one at aistudio.google.com';
+    }
+    if (k.length < 25) return 'Key looks too short — check you copied the whole thing';
+    return null;
+  }
+
+  Future<void> _save() async {
+    final err = _validate(_controller.text);
+    if (err != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('⚠️ $err'), backgroundColor: AppTheme.danger),
+      );
+      return;
+    }
+    setState(() => _saving = true);
+    await Provider.of<DepthFenceState>(context, listen: false)
+        .setGeminiKey(_controller.text);
+    if (!mounted) return;
+    setState(() => _saving = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('✅ Gemini key saved — AI Assistant is ready'),
+        backgroundColor: AppTheme.success,
+      ),
+    );
+    Navigator.pop(context, true);
+  }
+
+  Future<void> _clear() async {
+    setState(() => _saving = true);
+    await Provider.of<DepthFenceState>(context, listen: false).setGeminiKey('');
+    if (!mounted) return;
+    _controller.clear();
+    setState(() => _saving = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Key cleared'),
+        backgroundColor: AppTheme.info,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final state = Provider.of<DepthFenceState>(context);
+    final hasKey = state.geminiApiKey.isNotEmpty;
+    final keyStr = state.geminiApiKey;
+
+    return Scaffold(
+      backgroundColor: AppTheme.scaffold,
+      appBar: AppBar(title: const Text('Gemini API Key')),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          Container(
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              color: AppTheme.card,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: hasKey
+                    ? AppTheme.success.withValues(alpha: 0.4)
+                    : AppTheme.gold.withValues(alpha: 0.4),
+              ),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: (hasKey ? AppTheme.success : AppTheme.gold)
+                        .withValues(alpha: 0.15),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    hasKey ? Icons.check_circle_rounded : Icons.key_rounded,
+                    color: hasKey ? AppTheme.success : AppTheme.gold,
+                    size: 22,
+                  ),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        hasKey ? 'Key configured' : 'No key set',
+                        style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w800,
+                          color: AppTheme.textPrimary,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        hasKey
+                            ? '${keyStr.substring(0, keyStr.length < 8 ? keyStr.length : 8)}...${keyStr.length >= 4 ? keyStr.substring(keyStr.length - 4) : ""}'
+                            : 'Paste your key below to enable AI features',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: AppTheme.textSecondary,
+                          fontFamily: 'monospace',
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 24),
+          const Text(
+            'HOW TO GET A KEY',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.bold,
+              color: AppTheme.gold,
+              letterSpacing: 1.5,
+            ),
+          ),
+          const SizedBox(height: 10),
+          _step('1', 'Open aistudio.google.com/app/apikey in a browser'),
+          _step('2', 'Sign in with your Google account'),
+          _step('3', 'Click "Create API key"'),
+          _step('4', 'Choose "Create API key in new project"'),
+          _step('5', 'Copy the key — it starts with "AIzaSy"'),
+          _step('6', 'Paste it in the field below'),
+          const SizedBox(height: 24),
+          const Text(
+            'API KEY',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.bold,
+              color: AppTheme.gold,
+              letterSpacing: 1.5,
+            ),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _controller,
+            obscureText: _obscure,
+            style: const TextStyle(
+              color: AppTheme.textPrimary,
+              fontSize: 13,
+              fontFamily: 'monospace',
+            ),
+            maxLines: 1,
+            decoration: InputDecoration(
+              hintText: 'AIzaSy...',
+              hintStyle: const TextStyle(
+                color: AppTheme.textMuted,
+                fontFamily: 'monospace',
+              ),
+              prefixIcon: const Icon(Icons.vpn_key_rounded,
+                  color: AppTheme.gold, size: 20),
+              suffixIcon: IconButton(
+                icon: Icon(
+                  _obscure
+                      ? Icons.visibility_outlined
+                      : Icons.visibility_off_outlined,
+                  color: AppTheme.textSecondary,
+                  size: 20,
+                ),
+                onPressed: () => setState(() => _obscure = !_obscure),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          const Text(
+            'Your key is stored only on this device. It never leaves your phone except when talking directly to Google\'s Gemini API.',
+            style: TextStyle(
+              fontSize: 11,
+              color: AppTheme.textMuted,
+              height: 1.5,
+            ),
+          ),
+          const SizedBox(height: 24),
+          ElevatedButton.icon(
+            onPressed: _saving ? null : _save,
+            icon: _saving
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      valueColor: AlwaysStoppedAnimation<Color>(Colors.black),
+                    ),
+                  )
+                : const Icon(Icons.save_rounded),
+            label: Text(_saving ? 'Saving...' : 'Save Key'),
+          ),
+          if (hasKey) ...[
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: _saving ? null : _clear,
+              icon: const Icon(Icons.delete_outline_rounded),
+              label: const Text('Clear Stored Key'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppTheme.danger,
+                side: const BorderSide(color: AppTheme.danger),
+                minimumSize: const Size.fromHeight(50),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _step(String n, String text) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 22,
+            height: 22,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: AppTheme.gold.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text(
+              n,
+              style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+                color: AppTheme.gold,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(
+                fontSize: 12.5,
+                color: AppTheme.textSecondary,
+                height: 1.5,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================
+// DEPTHFENCE AI ASSISTANT — DIRECT REST IMPLEMENTATION
+// Works with both AIzaSy... and AQ.Ab8RN6... key formats.
 // ============================================================
 
 class GeminiChatScreen extends StatefulWidget {
@@ -10551,256 +10864,174 @@ class GeminiChatScreen extends StatefulWidget {
 }
 
 class _GeminiChatScreenState extends State<GeminiChatScreen> {
-  final TextEditingController _controller = TextEditingController();
-  final ScrollController _scrollController = ScrollController();
+  final TextEditingController _input = TextEditingController();
+  final ScrollController _scroll = ScrollController();
 
-  late final GenerativeModel _model;
-  late ChatSession _chat;
+  final List<_ChatMessage> _messages = [];
+  bool _sending = false;
 
-  final List<Map<String, String>> _messages = [];
-  bool _isLoading = false;
-  bool _apiKeyMissing = false;
+  static const String _systemPrompt = '''
+You are DepthFence AI, a geospatial land intelligence assistant for Indian land survey operations.
+Help with: land parcels, cadastral mapping, ULPIN, building height by shadow math, anomaly detection, survey reports.
+Keep answers concise and field-oriented. Use Indian context (Bhu-Naksha, DILRMP, SVAMITVA) when relevant.
+''';
 
   @override
   void initState() {
     super.initState();
-
-    // Check if API key is set
-    if (AppConstants.geminiApiKey.isEmpty ||
-        AppConstants.geminiApiKey == 'PASTE_YOUR_KEY_HERE') {
-      _apiKeyMissing = true;
-      return;
-    }
-
-    try {
-      // Initialize Gemini model with DepthFence context
-      _model = GenerativeModel(
-        model: AppConstants.geminiModel,
-        apiKey: AppConstants.geminiApiKey,
-        systemInstruction: Content.system(
-          'You are the DepthFence AI Assistant, an expert in geospatial land '
-              'intelligence, cadastral mapping, land surveying, depth analysis, '
-              'and illegal construction detection. You help field surveyors and '
-              'government administrators with their questions about land parcels, '
-              'anomalies, building heights, and survey reports. '
-              'Answer concisely and practically.',
-        ),
-      );
-
-      // Start a persistent multi-turn chat session
-      _chat = _model.startChat();
-
-      // Add welcome message
-      _messages.add({
-        'sender': 'bot',
-        'text': '👋 Hello! I\'m your DepthFence AI Assistant.\n\n'
-            'Ask me anything about:\n'
-            '• Land parcels & cadastral mapping\n'
-            '• Building height calculations\n'
-            '• Anomaly detection\n'
-            '• Survey reports & ULPIN\n\n'
-            'How can I help you today?',
-      });
-    } catch (e) {
-      _apiKeyMissing = true;
-      debugPrint('Gemini init failed: $e');
-    }
+    _messages.add(_ChatMessage(
+      role: _ChatRole.assistant,
+      text:
+          '👋 Hello! I\'m your DepthFence AI Assistant.\n\n'
+          'Ask me anything about:\n'
+          '• Land parcels & cadastral mapping\n'
+          '• Building height calculations\n'
+          '• Anomaly detection\n'
+          '• Survey reports & ULPIN\n\n'
+          'How can I help you today?',
+    ));
   }
 
   @override
   void dispose() {
-    _controller.dispose();
-    _scrollController.dispose();
+    _input.dispose();
+    _scroll.dispose();
     super.dispose();
   }
 
-  // ---------- Send Message ----------
-  Future<void> _sendMessage() async {
-    final text = _controller.text.trim();
-    if (text.isEmpty || _isLoading) return;
+  Future<void> _send() async {
+    final text = _input.text.trim();
+    if (text.isEmpty || _sending) return;
 
     setState(() {
-      _messages.add({'sender': 'user', 'text': text});
-      _isLoading = true;
+      _messages.add(_ChatMessage(role: _ChatRole.user, text: text));
+      _input.clear();
+      _sending = true;
     });
-    _controller.clear();
     _scrollToBottom();
 
-    try {
-      final response = await _chat.sendMessage(Content.text(text));
-      if (!mounted) return;
+    final reply = await _callGemini(text);
 
-      setState(() {
-        _messages.add({
-          'sender': 'bot',
-          'text': response.text ?? 'Sorry, no response generated.',
-        });
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _messages.add({
-          'sender': 'bot',
-          'text': '⚠ Error: ${e.toString().split('\n').first}',
-        });
-      });
-    } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-        _scrollToBottom();
-      }
-    }
+    setState(() {
+      _messages.add(_ChatMessage(role: _ChatRole.assistant, text: reply));
+      _sending = false;
+    });
+    _scrollToBottom();
   }
 
-  // ---------- File Query ----------
-  Future<void> _pickAndQueryFile() async {
-    try {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.any,
-        allowMultiple: false,
-      );
-
-      if (result == null || result.files.isEmpty) return;
-
-      final filePath = result.files.first.path;
-      if (filePath == null) return;
-
-      final file = File(filePath);
-      final fileName = result.files.first.name;
-
-      // Ask user for question about the file
-      if (!mounted) return;
-      final question = await _showQuestionDialog(fileName);
-      if (question == null || question.isEmpty) return;
-
-      setState(() {
-        _messages.add({
-          'sender': 'user',
-          'text': '📎 Attached: $fileName\n\n$question',
-        });
-        _isLoading = true;
-      });
-      _scrollToBottom();
-
-      // Read file (limit to 100KB to avoid token limits)
-      String fileContent;
-      final fileSize = await file.length();
-      if (fileSize > 100 * 1024) {
-        final content = await file.readAsString();
-        fileContent =
-        '${content.substring(0, 100 * 1024)}\n\n[File truncated to 100KB]';
-      } else {
-        fileContent = await file.readAsString();
-      }
-
-      final prompt = 'Context File: $fileName\n\n'
-          'Content:\n$fileContent\n\n'
-          'User Question: $question';
-
-      final response = await _chat.sendMessage(Content.text(prompt));
-      if (!mounted) return;
-
-      setState(() {
-        _messages.add({
-          'sender': 'bot',
-          'text': response.text ?? 'Unable to process file.',
-        });
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _messages.add({
-          'sender': 'bot',
-          'text': '⚠ Failed to read file: ${e.toString().split('\n').first}',
-        });
-      });
-    } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-        _scrollToBottom();
-      }
+  /// Calls the Gemini REST API directly using the x-goog-api-key header.
+  /// This is what makes AQ.* and AIzaSy.* keys work.
+  Future<String> _callGemini(String userText) async {
+    final state = Provider.of<DepthFenceState>(context, listen: false);
+    final apiKey = state.geminiApiKey;
+    if (apiKey.isEmpty) {
+      return '⚠️ No API key set.\n\nTap the 🔑 key icon in the AppBar to paste your Gemini API key.';
     }
-  }
 
-  Future<String?> _showQuestionDialog(String fileName) async {
-    final qController = TextEditingController();
-    return showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppTheme.surface,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
-        ),
-        title: Row(
-          children: [
-            const Icon(Icons.attach_file_rounded,
-                color: AppTheme.gold, size: 20),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                fileName,
-                style: const TextStyle(
-                  color: AppTheme.gold,
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
-                ),
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ],
-        ),
-        content: TextField(
-          controller: qController,
-          autofocus: true,
-          maxLines: 3,
-          style: const TextStyle(color: AppTheme.textPrimary),
-          decoration: const InputDecoration(
-            hintText: 'What would you like to ask about this file?',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel',
-                style: TextStyle(color: AppTheme.textSecondary)),
-          ),
-          ElevatedButton(
-            onPressed: () =>
-                Navigator.pop(ctx, qController.text.trim()),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.gold,
-              foregroundColor: Colors.black,
-            ),
-            child: const Text('Ask'),
-          ),
-        ],
-      ),
+    final uri = Uri.parse(
+      'https://generativelanguage.googleapis.com/v1beta/models/'
+      '${AppConstants.geminiModel}:generateContent',
     );
+
+    // Build conversation history for context
+    final contents = <Map<String, dynamic>>[];
+    for (final m in _messages) {
+      if (m.text.startsWith('👋') || m.text.startsWith('⚠️')) continue;
+      contents.add({
+        'role': m.role == _ChatRole.user ? 'user' : 'model',
+        'parts': [
+          {'text': m.text}
+        ],
+      });
+    }
+    contents.add({
+      'role': 'user',
+      'parts': [
+        {'text': userText}
+      ],
+    });
+
+    final body = jsonEncode({
+      'systemInstruction': {
+        'parts': [
+          {'text': _systemPrompt}
+        ],
+      },
+      'contents': contents,
+      'generationConfig': {
+        'temperature': 0.6,
+        'maxOutputTokens': 1024,
+      },
+    });
+
+    try {
+      final response = await http
+          .post(
+            uri,
+            headers: {
+              'Content-Type': 'application/json',
+              'x-goog-api-key': apiKey,
+            },
+            body: body,
+          )
+          .timeout(const Duration(seconds: 30));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final candidates = data['candidates'] as List?;
+        if (candidates == null || candidates.isEmpty) {
+          return '⚠️ Empty response from AI. Try rephrasing.';
+        }
+        final content = candidates[0]['content'] as Map?;
+        final parts = content?['parts'] as List?;
+        if (parts == null || parts.isEmpty) {
+          return '⚠️ AI returned no content. Try again.';
+        }
+        final text = parts[0]['text'] as String?;
+        return (text == null || text.isEmpty)
+            ? '⚠️ AI returned empty text.'
+            : text.trim();
+      }
+
+      // Handle errors with useful messages
+      final errBody = response.body;
+      if (response.statusCode == 400) {
+        return '⚠️ Bad request (400).\n\n$errBody';
+      }
+      if (response.statusCode == 401 || response.statusCode == 403) {
+        return '⚠️ Key rejected (${response.statusCode}).\n\n'
+            'The key may be invalid or the Generative Language API not enabled.\n\n'
+            'Details: $errBody';
+      }
+      if (response.statusCode == 429) {
+        return '⚠️ Rate limit reached. Wait a minute and try again.';
+      }
+      return '⚠️ HTTP ${response.statusCode}\n\n$errBody';
+    } catch (e) {
+      return '⚠️ Network error: $e';
+    }
   }
 
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 300),
+      if (_scroll.hasClients) {
+        _scroll.animateTo(
+          _scroll.position.maxScrollExtent + 200,
+          duration: const Duration(milliseconds: 250),
           curve: Curves.easeOut,
         );
       }
     });
   }
 
-  void _clearChat() {
+  void _reset() {
     setState(() {
       _messages.clear();
-      _messages.add({
-        'sender': 'bot',
-        'text': '🧹 Chat cleared. How can I help you?',
-      });
+      _messages.add(_ChatMessage(
+        role: _ChatRole.assistant,
+        text: '👋 New conversation started. How can I help?',
+      ));
     });
-    try {
-      _chat = _model.startChat();
-    } catch (_) {}
   }
 
   @override
@@ -10810,167 +11041,163 @@ class _GeminiChatScreenState extends State<GeminiChatScreen> {
       appBar: AppBar(
         title: const Row(
           children: [
-            Icon(Icons.auto_awesome, color: AppTheme.gold, size: 20),
+            Icon(Icons.auto_awesome_rounded, color: AppTheme.gold, size: 20),
             SizedBox(width: 8),
             Text('AI Assistant'),
           ],
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh_rounded),
-            tooltip: 'Clear chat',
-            onPressed: _messages.length > 1 ? _clearChat : null,
+            icon: const Icon(Icons.vpn_key_rounded, color: AppTheme.gold),
+            tooltip: 'Set API key',
+            onPressed: () async {
+              final changed = await Navigator.push<bool>(
+                context,
+                MaterialPageRoute(builder: (_) => const GeminiKeyScreen()),
+              );
+              if (changed == true) _reset();
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.refresh_rounded, color: AppTheme.gold),
+            onPressed: _reset,
+            tooltip: 'New conversation',
           ),
         ],
       ),
-      body: _apiKeyMissing
-          ? _buildApiKeyMissingView()
-          : Column(
+      body: Column(
         children: [
-          // ---------- Messages List ----------
           Expanded(
             child: ListView.builder(
-              controller: _scrollController,
-              padding: const EdgeInsets.all(12),
-              itemCount: _messages.length,
-              itemBuilder: (context, index) {
-                final message = _messages[index];
-                final isUser = message['sender'] == 'user';
-                return _buildMessageBubble(message, isUser);
+              controller: _scroll,
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+              itemCount: _messages.length + (_sending ? 1 : 0),
+              itemBuilder: (context, i) {
+                if (i == _messages.length && _sending) {
+                  return const _TypingBubble();
+                }
+                return _MessageBubble(message: _messages[i]);
               },
             ),
           ),
+          _buildComposer(),
+        ],
+      ),
+    );
+  }
 
-          // ---------- Loading Indicator ----------
-          if (_isLoading)
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 16),
-              child: Row(
-                children: [
-                  SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      valueColor:
-                      AlwaysStoppedAnimation<Color>(AppTheme.gold),
-                    ),
-                  ),
-                  SizedBox(width: 12),
-                  Text(
-                    'Thinking...',
-                    style: TextStyle(
-                      color: AppTheme.textSecondary,
-                      fontSize: 12,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-          // ---------- Input Area ----------
+  Widget _buildComposer() {
+    return Container(
+      padding: EdgeInsets.fromLTRB(
+        12,
+        10,
+        12,
+        MediaQuery.of(context).padding.bottom + 10,
+      ),
+      decoration: const BoxDecoration(
+        color: AppTheme.surface,
+        border: Border(top: BorderSide(color: AppTheme.border, width: 1)),
+      ),
+      child: Row(
+        children: [
           Container(
-            padding: const EdgeInsets.all(12),
-            decoration: const BoxDecoration(
-              color: AppTheme.surface,
-              border: Border(
-                top: BorderSide(color: AppTheme.border, width: 1),
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: AppTheme.card,
+              shape: BoxShape.circle,
+              border: Border.all(color: AppTheme.gold.withValues(alpha: 0.4)),
+            ),
+            child: const Icon(Icons.attach_file_rounded,
+                color: AppTheme.gold, size: 20),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: TextField(
+              controller: _input,
+              style: const TextStyle(color: AppTheme.textPrimary, fontSize: 14),
+              maxLines: null,
+              textInputAction: TextInputAction.send,
+              onSubmitted: (_) => _send(),
+              decoration: InputDecoration(
+                hintText: 'Ask about land, parcels, anomalies...',
+                hintStyle: const TextStyle(
+                    color: AppTheme.textMuted, fontSize: 13),
+                filled: true,
+                fillColor: AppTheme.card,
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(24),
+                  borderSide: const BorderSide(color: AppTheme.border),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(24),
+                  borderSide: const BorderSide(color: AppTheme.border),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(24),
+                  borderSide: const BorderSide(color: AppTheme.gold),
+                ),
               ),
             ),
-            child: SafeArea(
-              top: false,
-              child: Row(
-                children: [
-                  // File attach button
-                  IconButton(
-                    onPressed: _isLoading ? null : _pickAndQueryFile,
-                    icon: const Icon(Icons.attach_file_rounded),
-                    color: AppTheme.gold,
-                    tooltip: 'Attach file',
-                  ),
-                  // Text input
-                  Expanded(
-                    child: TextField(
-                      controller: _controller,
-                      enabled: !_isLoading,
-                      style: const TextStyle(
-                        color: AppTheme.textPrimary,
-                        fontSize: 14,
-                      ),
-                      decoration: InputDecoration(
-                        hintText: 'Ask about land, parcels, anomalies...',
-                        filled: true,
-                        fillColor: AppTheme.card,
-                        contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 10),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(24),
-                          borderSide:
-                          const BorderSide(color: AppTheme.border),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(24),
-                          borderSide:
-                          const BorderSide(color: AppTheme.border),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(24),
-                          borderSide:
-                          const BorderSide(color: AppTheme.gold),
-                        ),
-                      ),
-                      textInputAction: TextInputAction.send,
-                      onSubmitted: (_) => _sendMessage(),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  // Send button
-                  GestureDetector(
-                    onTap: _isLoading ? null : _sendMessage,
-                    child: Container(
-                      width: 44,
-                      height: 44,
-                      decoration: BoxDecoration(
-                        color: _isLoading
-                            ? AppTheme.textMuted
-                            : AppTheme.gold,
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(
-                        Icons.send_rounded,
-                        color: Colors.black,
-                        size: 20,
-                      ),
-                    ),
-                  ),
-                ],
+          ),
+          const SizedBox(width: 10),
+          GestureDetector(
+            onTap: _sending ? null : _send,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              width: 48,
+              height: 48,
+              decoration: BoxDecoration(
+                color: _sending ? AppTheme.border : AppTheme.gold,
+                shape: BoxShape.circle,
               ),
+              child: _sending
+                  ? const Padding(
+                      padding: EdgeInsets.all(14),
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor:
+                            AlwaysStoppedAnimation<Color>(Colors.black),
+                      ),
+                    )
+                  : const Icon(Icons.send_rounded,
+                      color: Colors.black, size: 22),
             ),
           ),
         ],
       ),
     );
   }
+}
 
-  Widget _buildMessageBubble(Map<String, String> message, bool isUser) {
+enum _ChatRole { user, assistant }
+
+class _ChatMessage {
+  final _ChatRole role;
+  final String text;
+  _ChatMessage({required this.role, required this.text});
+}
+
+class _MessageBubble extends StatelessWidget {
+  final _ChatMessage message;
+  const _MessageBubble({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    final isUser = message.role == _ChatRole.user;
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
         constraints: BoxConstraints(
           maxWidth: MediaQuery.of(context).size.width * 0.78,
         ),
-        margin: const EdgeInsets.symmetric(vertical: 4),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
-          color: isUser
-              ? AppTheme.gold.withValues(alpha: 0.15)
-              : AppTheme.card,
-          borderRadius: BorderRadius.only(
-            topLeft: const Radius.circular(16),
-            topRight: const Radius.circular(16),
-            bottomLeft: Radius.circular(isUser ? 16 : 4),
-            bottomRight: Radius.circular(isUser ? 4 : 16),
-          ),
+          color: isUser ? AppTheme.gold.withValues(alpha: 0.15) : AppTheme.card,
+          borderRadius: BorderRadius.circular(18),
           border: Border.all(
             color: isUser
                 ? AppTheme.gold.withValues(alpha: 0.4)
@@ -10980,32 +11207,34 @@ class _GeminiChatScreenState extends State<GeminiChatScreen> {
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
-            if (!isUser)
-              const Padding(
-                padding: EdgeInsets.only(bottom: 4),
-                child: Row(
-                  children: [
-                    Icon(Icons.auto_awesome,
-                        color: AppTheme.gold, size: 12),
-                    SizedBox(width: 4),
-                    Text(
-                      'DepthFence AI',
-                      style: TextStyle(
-                        color: AppTheme.gold,
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
-                      ),
+            if (!isUser) ...[
+              const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.auto_awesome_rounded,
+                      color: AppTheme.gold, size: 14),
+                  SizedBox(width: 6),
+                  Text(
+                    'DepthFence AI',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: AppTheme.gold,
+                      letterSpacing: 0.5,
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
+              const SizedBox(height: 8),
+            ],
             SelectableText(
-              message['text'] ?? '',
+              message.text,
               style: const TextStyle(
                 color: AppTheme.textPrimary,
                 fontSize: 13.5,
-                height: 1.4,
+                height: 1.5,
               ),
             ),
           ],
@@ -11013,53 +11242,39 @@ class _GeminiChatScreenState extends State<GeminiChatScreen> {
       ),
     );
   }
+}
 
-  Widget _buildApiKeyMissingView() {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
+class _TypingBubble extends StatelessWidget {
+  const _TypingBubble();
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+          color: AppTheme.card,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: AppTheme.border),
+        ),
+        child: const Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              width: 80,
-              height: 80,
-              decoration: BoxDecoration(
-                color: AppTheme.warning.withValues(alpha: 0.15),
-                shape: BoxShape.circle,
+            Icon(Icons.auto_awesome_rounded, color: AppTheme.gold, size: 14),
+            SizedBox(width: 8),
+            Text('Thinking',
+                style:
+                    TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
+            SizedBox(width: 8),
+            SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(
+                strokeWidth: 1.6,
+                valueColor: AlwaysStoppedAnimation<Color>(AppTheme.gold),
               ),
-              child: const Icon(
-                Icons.key_off_rounded,
-                color: AppTheme.warning,
-                size: 40,
-              ),
-            ),
-            const SizedBox(height: 20),
-            const Text(
-              'Gemini API Key Missing',
-              style: TextStyle(
-                color: AppTheme.textPrimary,
-                fontSize: 18,
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-            const SizedBox(height: 10),
-            const Text(
-              'Add your Gemini API key to\nAppConstants.geminiApiKey in main.dart',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: AppTheme.textSecondary,
-                fontSize: 13,
-                height: 1.5,
-              ),
-            ),
-            const SizedBox(height: 20),
-            ElevatedButton.icon(
-              onPressed: () {
-                Navigator.pop(context);
-              },
-              icon: const Icon(Icons.arrow_back_rounded),
-              label: const Text('Go Back'),
             ),
           ],
         ),
